@@ -1,0 +1,25 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python",
+            "type": "python",
+            "request": "launch",
+            "program": "${file}",
+            "console": "internalConsole",
+            "env": {
+                // Use a GDAL release from https://gisinternals.com/release.php
+                // First 3 packages (release-*.zip) are only needed:
+                //  "Compiled binaries", "GDAL and MapServer sources" and "Compiled libraries and headers"
+                "Path": "${workspaceRoot}/../gdal-release/release-1911-x64-gdal-3-1-3-mapserver-7-6-1/bin;${env:Path}",
+                "GDAL_DRIVER_PATH": "${workspaceRoot}/../gdal-release/release-1911-x64-gdal-3-1-3-mapserver-7-6-1/bin/gdal/plugins",
+                "USE_PATH_FOR_GDAL_PYTHON": "YES",
+                },
+            "args": [
+            ],
+            "internalConsoleOptions": "openOnSessionStart",
+            "stopOnEntry": false,
+            "justMyCode": true,
+       }
+    ]
+}
