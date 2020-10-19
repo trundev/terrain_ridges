@@ -96,8 +96,12 @@ def generate_ridges(dem_band, dst_layer=None, valleys=False):
                 # Insert the point in 'tentative' by keeping it sorted by altitude
                 def cmp_fn(val, *args):
                     check_xy, _ = val
-                    # Ascending sort  (<), insert a duplicated altitude at lower index (<=).
-                    # Thus, duplicated altitudes will be processed in order of appearance (FIFO).
+                    # The duplicated altitudes are placed at lowest possible index (<= or >=).
+                    # Thus, they are processed in order of appearance (FIFO).
+                    if valleys:
+                        # Descending sort FIFO-duplicate (>=)
+                        return -1 if alt >= dem_band.get_elevation(check_xy) else 1
+                    # Ascending sort FIFO-duplicate (<=)
                     return -1 if alt <= dem_band.get_elevation(check_xy) else 1
                 idx, _ = search_sorted(tentative, cmp_fn)
                 tentative.insert(idx, (t_xy, dist + distance.get_distance(x_y, t_xy)))
@@ -132,6 +136,8 @@ def main(argv):
         if argv[0][0] == '-':
             if argv[0] == '-h':
                 return print_help()
+            if argv[0] == '-valley':
+                valleys = True
             else:
                 return print_help('Unsupported option "%s"'%argv[0])
         else:
@@ -172,6 +178,7 @@ def print_help(err_msg=None):
     print('Usage:', sys.argv[0], '[<options>] <src_filename> <dst_filename>')
     print('\tOptions:')
     print('\t-h\t- This screen')
+    print('\t-valley\t- Generate valleys, instead of ridges')
     return 0 if err_msg is None else 255
 
 if __name__ == '__main__':
