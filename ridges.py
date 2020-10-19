@@ -12,6 +12,8 @@ NEIGHBOR_SELF = 0
 NEIGHBOR_INVALID = -100
 NEIGHBOR_IDX_DTYPE = numpy.int8
 
+def VECTOR_LAYER_NAME(valleys): return 'valleys' if valleys else 'ridges'
+
 #
 # Generic tools
 #
@@ -54,7 +56,7 @@ def neighbor_inv(neighbor_idx):
         return -neighbor_idx
     return None
 
-def generate_ridges(dem_band, valleys=False):
+def generate_ridges(dem_band, dst_layer=None, valleys=False):
     """Generate terrain ridges or valeys"""
     # Start at the max/min altitude (first one)
     flat_idx = dem_band.dem_buf.argmin() if valleys else dem_band.dem_buf.argmax()
@@ -109,7 +111,16 @@ def generate_ridges(dem_band, valleys=False):
     # Process first 10 (longest) lines
     for x_y, dist in result_lines[:10]:
         print('Generating line starting at point %s total length %d'%(x_y, dist))
-        #TODO:
+        if dst_layer is not None:
+            geom = dst_layer.create_feature_geometry(gdal_utils.wkbLineString)
+            # Trace route
+            while x_y is not None:
+                geom.add_point(*dem_band.xy2lonlatalt(x_y))
+                n_idx = gdal_utils.read_arr(prev_arr, x_y)
+                x_y = None if n_idx == NEIGHBOR_SELF else neighbor_xy(x_y, n_idx)
+            geom.create()
+            #TODO: Currently, first line only
+            break
 
     return 0
 
@@ -141,9 +152,18 @@ def main(argv):
     if dem_band is None:
         return print_help('Unable to open "%s"'%src_filename)
 
+    dst_ds = gdal_utils.vect_create(dst_filename)
+    if dst_ds is None:
+        return print_help('Unable to create "%s"'%src_filename)
+
+    dst_layer = gdal_utils.gdal_vect_layer.create(dst_ds, VECTOR_LAYER_NAME(valleys), dem_band.get_spatial_ref())
+    if dst_layer is None:
+        print('Error: Unable to create layer', file=sys.stderr)
+        return 1
+
     # Generate ridges/valleys
     dem_band.load()
-    res = generate_ridges(dem_band, valleys)
+    res = generate_ridges(dem_band, dst_layer, valleys)
     return res
 
 def print_help(err_msg=None):
