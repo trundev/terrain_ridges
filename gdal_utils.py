@@ -4,6 +4,7 @@ import sys
 import numpy
 import gdal
 import ogr
+import osr
 import pyproj
 
 
@@ -49,6 +50,30 @@ class gdal_dataset:
         x_y = x_y[...,numpy.newaxis,:]
         return (self.xform * x_y).sum(-1)
 
+    def build_srs_xform(self, tgt_srs):
+        """Create transformation to another SRS"""
+        return osr.CoordinateTransformation(self.get_spatial_ref(), tgt_srs)
+
+    def build_geogcs_xform(self):
+        """Create transformation to GEOGCS, 'None' if not needed"""
+        srs = self.get_spatial_ref()
+        # Assume geographic, when SRS is missing (no .prj file)
+        if srs is None or srs.IsGeographic():
+            return None     # Already geographic
+        return self.build_srs_xform(srs.CloneGeogCS())
+
+    @staticmethod
+    def coord_xform(srs_xform, coords):
+        """Transform coordinates, see build_srs_xform()"""
+        # TransformPoints() supports 2D arrays only
+        orig_shape = coords.shape
+        coords = coords.reshape(-1, orig_shape[-1])
+        coords = srs_xform.TransformPoints(coords)
+        # Strip the added 0 altitudes, if no such in the source
+        coords = numpy.array(coords)[...,:orig_shape[-1]]
+        # Resize back the array
+        return coords.reshape(orig_shape)
+
     def get_spatial_ref(self):
         return self.dataset.GetSpatialRef()
 
@@ -92,6 +117,8 @@ class gdal_dem_band(gdal_dataset):
         self.dem_buf = self.dem_buf.reshape(ysize, xsize).transpose()
         # Update transformation matrix with the offset
         self.update_xform(numpy.array([xstart, ystart]))
+        # Create GEOGCS transformation, to be used by xy2lonlat() (non-geographics only)
+        self.geogcs_xform = self.build_geogcs_xform()
         return True
 
     def in_bounds(self, x_y):
@@ -114,13 +141,21 @@ class gdal_dem_band(gdal_dataset):
                 alt[alt == self.nodata_val] = numpy.nan
         return alt
 
-    def xy2lonlat(self, x_y):
-        """Convert raster (x,y) coordinate(s) to lon/lan (east,north)"""
+    def xy2coords(self, x_y):
+        """Convert raster (x,y) to the dataset's SRS coordinate(s)"""
         if True:
             # Adjust point to the center of the raster pixel
             # (otherwise, the coordinates will be at the top-left (NW) corner)
             x_y = x_y + .5
         return self.affine_xform(x_y)
+
+    def xy2lonlat(self, x_y):
+        """Convert raster (x,y) coordinate(s) to lon/lan (east,north)"""
+        coords = self.xy2coords(x_y)
+        if self.geogcs_xform is None:
+            return coords
+        # The geogcs_xform is valid when coordinates are non-geographic
+        return self.coord_xform(self.geogcs_xform, coords)
 
     def xy2lonlatalt(self, x_y):
         """Convert raster (x,y) coordinate(s) to lon/lan/alt (east,north,alt)"""
@@ -134,7 +169,13 @@ class gdal_dem_band(gdal_dataset):
 class geod_distance:
     def __init__(self, gdal_dem_band):
         self.dem_band = gdal_dem_band
-        self.geod = pyproj.Geod(ellps='WGS84')
+        srs = gdal_dem_band.get_spatial_ref()
+        # Assume WGS84, when SRS is missing
+        if srs is None:
+            self.geod = pyproj.Geod(ellps='WGS84')
+        else:
+            wkt = srs.ExportToWkt()
+            self.geod = pyproj.crs.CRS.from_wkt(wkt).get_geod()
 
     def get_distance(self, xy0, xy1):
         """Calculate distance between two points"""
