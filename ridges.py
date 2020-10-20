@@ -1,5 +1,6 @@
 """Generate terrain ridges/valleys"""
 import sys
+import time
 import numpy
 import gdal_utils
 
@@ -126,7 +127,7 @@ def trace_ridges(dem_band, valleys=False):
 
         if end_of_line:
             dist = trace_distance(prev_arr, x_y)
-            print('  Line finished at point %s total length %d'%(x_y, dist))
+            #print('  Line finished at point %s total length %d'%(x_y, dist))
             # Keep this end-point in 'result_lines'
             result_lines_insert(result_lines, (x_y, dist))
 
@@ -205,22 +206,28 @@ def main(argv):
 
     # Trace ridges/valleys
     dem_band.load()
+    start = time.time()
     result_lines, prev_arr = trace_ridges(dem_band, valleys)
     if result_lines is None:
         return 1
-    print('Traced total %d lines, max length %d'%(len(result_lines), result_lines[0][1]))
+    duration = time.time() - start
+    print('Traced total %d lines, max length %d, %d sec'%(len(result_lines), result_lines[0][1], duration))
 
     # Combine traced lines, longer than quarter of the longest one
+    start = time.time()
     polylines = combine_lines(result_lines, prev_arr, result_lines[0][1] / 4)
-    print('Created total %d polylines, first %d, last %d points'%(len(polylines), len(polylines[0]), len(polylines[-1])))
+    duration = time.time() - start
+    print('Created total %d polylines, first %d, last %d points, %d sec'%(len(polylines), len(polylines[0]), len(polylines[-1]), duration))
 
     if dst_layer:
+        start = time.time()
         for pline in polylines:
             geom = dst_layer.create_feature_geometry(gdal_utils.wkbLineString)
             for x_y in pline:
                 geom.add_point(*dem_band.xy2lonlatalt(x_y))
             geom.create()
-        print('Created total %d geometries'%(len(polylines)))
+        duration = time.time() - start
+        print('Created total %d geometries, %d sec'%(len(polylines), duration))
 
     return 0
 
