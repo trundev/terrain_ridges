@@ -1,4 +1,4 @@
-"""Generate terrain ridges/valeys"""
+"""Generate terrain ridges/valleys"""
 import sys
 import numpy
 import gdal_utils
@@ -56,8 +56,23 @@ def neighbor_inv(neighbor_idx):
         return -neighbor_idx
     return None
 
-def generate_ridges(dem_band, dst_layer=None, valleys=False):
-    """Generate terrain ridges or valeys"""
+def trace_distance(prev_arr, x_y):
+    """Calculate trace distance"""
+    dist = 0.
+    while True:
+        n_idx, n_dist = gdal_utils.read_arr(prev_arr, x_y)
+        if n_idx == NEIGHBOR_SELF:
+            return dist
+        dist += n_dist
+        x_y = neighbor_xy(x_y, n_idx)
+
+def result_lines_insert(result_lines, entry):
+    """Insert entry in result_lines by keeping it sorted by distance (entry[1])"""
+    idx, _ = search_sorted(result_lines, lambda v: 1 if entry[1] < v[1] else -1)
+    result_lines.insert(idx, entry)
+
+def trace_ridges(dem_band, valleys=False):
+    """Generate terrain ridges or valleys"""
     # Start at the max/min altitude (first one)
     flat_idx = dem_band.dem_buf.argmin() if valleys else dem_band.dem_buf.argmax()
     seed_xy = numpy.unravel_index(flat_idx, dem_band.dem_buf.shape)
@@ -65,17 +80,20 @@ def generate_ridges(dem_band, dst_layer=None, valleys=False):
     print('Seed point', seed_xy, ', altitude', dem_band.get_elevation(seed_xy))
 
     #
-    # Previous index array
+    # Previous index and distance array
     # Initialize with invalid value.
     #
-    prev_arr = numpy.full(dem_band.dem_buf.shape, NEIGHBOR_INVALID, dtype=NEIGHBOR_IDX_DTYPE)
-    gdal_utils.write_arr(prev_arr, seed_xy, NEIGHBOR_SELF)
+    prev_arr = numpy.full(dem_band.dem_buf.shape, NEIGHBOR_INVALID, dtype=[
+            ('n_idx', NEIGHBOR_IDX_DTYPE),
+            ('dist', numpy.float),
+        ])
+    gdal_utils.write_arr(prev_arr['n_idx'], seed_xy, NEIGHBOR_SELF)
 
     #
-    # Tentative point list (coord and distance)
+    # Tentative point list (coord)
     # Initially contains the start point only
     #
-    tentative = [(seed_xy, 0)]
+    tentative = [seed_xy]
 
     #
     # End-points of generated lines (coord and distance)
@@ -84,18 +102,18 @@ def generate_ridges(dem_band, dst_layer=None, valleys=False):
 
     distance = gdal_utils.geod_distance(dem_band)
     while tentative:
-        x_y, dist = tentative.pop()
-        #print('    Processing point %s dist %d alt %s'%(x_y, dist, dem_band.get_elevation(seed_xy)))
+        x_y = tentative.pop()
+        #print('    Processing point %s alt %s'%(x_y, dem_band.get_elevation(seed_xy)))
         end_of_line = True
         for t_xy, n_idx in valid_neighbors(dem_band, x_y):
-            if gdal_utils.read_arr(prev_arr, t_xy) == NEIGHBOR_INVALID:
+            if gdal_utils.read_arr(prev_arr['n_idx'], t_xy) == NEIGHBOR_INVALID:
                 end_of_line = False
                 # Keep the inverted neighbor index to later track this back
-                gdal_utils.write_arr(prev_arr, t_xy, neighbor_inv(n_idx))
+                n_dist = distance.get_distance(x_y, t_xy)
+                gdal_utils.write_arr(prev_arr, t_xy, (neighbor_inv(n_idx), n_dist))
                 alt = dem_band.get_elevation(t_xy)
                 # Insert the point in 'tentative' by keeping it sorted by altitude
-                def cmp_fn(val, *args):
-                    check_xy, _ = val
+                def cmp_fn(check_xy, *args):
                     # The duplicated altitudes are placed at lowest possible index (<= or >=).
                     # Thus, they are processed in order of appearance (FIFO).
                     if valleys:
@@ -104,29 +122,47 @@ def generate_ridges(dem_band, dst_layer=None, valleys=False):
                     # Ascending sort FIFO-duplicate (<=)
                     return -1 if alt <= dem_band.get_elevation(check_xy) else 1
                 idx, _ = search_sorted(tentative, cmp_fn)
-                tentative.insert(idx, (t_xy, dist + distance.get_distance(x_y, t_xy)))
+                tentative.insert(idx, t_xy)
 
         if end_of_line:
+            dist = trace_distance(prev_arr, x_y)
             print('  Line finished at point %s total length %d'%(x_y, dist))
-            # Keep this end-point in 'result_lines' by keeping it sorted by distance
-            idx, _ = search_sorted(result_lines, lambda v: 1 if dist < v[1] else -1)
-            result_lines.insert(idx, (x_y, dist))
+            # Keep this end-point in 'result_lines'
+            result_lines_insert(result_lines, (x_y, dist))
 
-    # Process first 10 (longest) lines
-    for x_y, dist in result_lines[:10]:
+    return result_lines, prev_arr
+
+def combine_lines(result_lines, prev_arr, min_len=0):
+    """Create polylines from previously generated ridges or valleys"""
+    polylines = []
+    # Process the lines lenger than min_len
+    while result_lines[0][1] > min_len:
+        x_y, dist = result_lines.pop(0)
         print('Generating line starting at point %s total length %d'%(x_y, dist))
-        if dst_layer is not None:
-            geom = dst_layer.create_feature_geometry(gdal_utils.wkbLineString)
-            # Trace route
-            while x_y is not None:
-                geom.add_point(*dem_band.xy2lonlatalt(x_y))
-                n_idx = gdal_utils.read_arr(prev_arr, x_y)
-                x_y = None if n_idx == NEIGHBOR_SELF else neighbor_xy(x_y, n_idx)
-            geom.create()
-            #TODO: Currently, first line only
-            break
+        pline = []
+        # Trace route
+        while x_y is not None:
+            pline.append(x_y)
+            n_idx = gdal_utils.read_arr(prev_arr['n_idx'], x_y)
+            # Stop other lines from overlapping that one
+            gdal_utils.write_arr(prev_arr['n_idx'], x_y, NEIGHBOR_SELF)
+            x_y = None if n_idx == NEIGHBOR_SELF else neighbor_xy(x_y, n_idx)
+        polylines.append(pline)
 
-    return 0
+        # Update distances after some of the lines were cut
+        print('  Updating line distances')
+        idx = 0
+        while idx < len(result_lines):
+            x_y, old_dist = result_lines[idx]
+            dist = trace_distance(prev_arr, x_y)
+            if dist == old_dist:
+                idx += 1
+            else:
+                # Move the entry to keep 'result_lines' sorted by distance
+                del result_lines[idx]
+                result_lines_insert(result_lines, (x_y, dist))
+
+    return polylines
 
 def main(argv):
     """Main entry"""
@@ -167,10 +203,26 @@ def main(argv):
         print('Error: Unable to create layer', file=sys.stderr)
         return 1
 
-    # Generate ridges/valleys
+    # Trace ridges/valleys
     dem_band.load()
-    res = generate_ridges(dem_band, dst_layer, valleys)
-    return res
+    result_lines, prev_arr = trace_ridges(dem_band, valleys)
+    if result_lines is None:
+        return 1
+    print('Traced total %d lines, max length %d'%(len(result_lines), result_lines[0][1]))
+
+    # Combine traced lines, longer than quarter of the longest one
+    polylines = combine_lines(result_lines, prev_arr, result_lines[0][1] / 4)
+    print('Created total %d polylines, first %d, last %d points'%(len(polylines), len(polylines[0]), len(polylines[-1])))
+
+    if dst_layer:
+        for pline in polylines:
+            geom = dst_layer.create_feature_geometry(gdal_utils.wkbLineString)
+            for x_y in pline:
+                geom.add_point(*dem_band.xy2lonlatalt(x_y))
+            geom.create()
+        print('Created total %d geometries'%(len(polylines)))
+
+    return 0
 
 def print_help(err_msg=None):
     if err_msg:
