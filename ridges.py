@@ -71,14 +71,8 @@ def result_lines_insert(result_lines, entry):
     idx, _ = search_sorted(result_lines, lambda v: 1 if entry[1] < v[1] else -1)
     result_lines.insert(idx, entry)
 
-def trace_ridges(dem_band, valleys=False):
-    """Generate terrain ridges or valleys"""
-    # Start at the max/min altitude (first one)
-    flat_idx = dem_band.dem_buf.argmin() if valleys else dem_band.dem_buf.argmax()
-    seed_xy = numpy.unravel_index(flat_idx, dem_band.dem_buf.shape)
-    seed_xy = numpy.array(seed_xy)
-    print('Seed point', seed_xy, ', altitude', dem_band.get_elevation(seed_xy))
-
+def trace_ridges_generator(dem_band, seed_xy, valleys=False):
+    """Generate terrain ridges or valleys (step-by-step)"""
     #
     # Previous index and distance array
     # Initialize with invalid value.
@@ -94,11 +88,6 @@ def trace_ridges(dem_band, valleys=False):
     # Initially contains the start point only
     #
     tentative = [seed_xy]
-
-    #
-    # End-points of generated lines (coord and distance)
-    #
-    result_lines = []
 
     distance = gdal_utils.geod_distance(dem_band)
     while tentative:
@@ -125,16 +114,31 @@ def trace_ridges(dem_band, valleys=False):
                 tentative.insert(idx, t_xy)
 
         if end_of_line:
-            dist = trace_distance(prev_arr, x_y)
-            print('  Line finished at point %s total length %d'%(x_y, dist))
-            # Keep this end-point in 'result_lines'
-            result_lines_insert(result_lines, (x_y, dist))
+            yield x_y, prev_arr
+
+def trace_ridges(dem_band, valleys=False):
+    """Generate terrain ridges or valeys"""
+    # Start at the max/min altitude (first one)
+    flat_idx = dem_band.dem_buf.argmin() if valleys else dem_band.dem_buf.argmax()
+    seed_xy = numpy.unravel_index(flat_idx, dem_band.dem_buf.shape)
+    seed_xy = numpy.array(seed_xy)
+    print('Seed point', seed_xy, ', altitude', dem_band.get_elevation(seed_xy))
+
+    #
+    # End-points of generated lines (coord and distance)
+    #
+    result_lines = []
+
+    for x_y, prev_arr in trace_ridges_generator(dem_band, seed_xy, valleys):
+        dist = trace_distance(prev_arr, x_y)
+        print('  Line finished at point %s total length %d'%(x_y, dist))
+        # Keep this end-point in 'result_lines'
+        result_lines_insert(result_lines, (x_y, dist))
 
     return result_lines, prev_arr
 
-def combine_lines(result_lines, prev_arr, min_len=0):
-    """Create polylines from previously generated ridges or valleys"""
-    polylines = []
+def combine_lines_generator(result_lines, prev_arr, min_len=0):
+    """Create polylines from previously generated ridges or valleys (step-by-step)"""
     # Process the lines lenger than min_len
     while result_lines[0][1] > min_len:
         x_y, dist = result_lines.pop(0)
@@ -147,7 +151,7 @@ def combine_lines(result_lines, prev_arr, min_len=0):
             # Stop other lines from overlapping that one
             gdal_utils.write_arr(prev_arr['n_idx'], x_y, NEIGHBOR_SELF)
             x_y = None if n_idx == NEIGHBOR_SELF else neighbor_xy(x_y, n_idx)
-        polylines.append(pline)
+        yield pline
 
         # Update distances after some of the lines were cut
         print('  Updating line distances')
@@ -162,6 +166,11 @@ def combine_lines(result_lines, prev_arr, min_len=0):
                 del result_lines[idx]
                 result_lines_insert(result_lines, (x_y, dist))
 
+def combine_lines(result_lines, prev_arr, min_len=0):
+    """Combine previosly generated ridge lines"""
+    polylines = []
+    for pline in combine_lines_generator(result_lines, prev_arr, min_len):
+        polylines.append(pline)
     return polylines
 
 def main(argv):
