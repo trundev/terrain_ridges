@@ -181,6 +181,7 @@ def combine_lines(result_lines, prev_arr, min_len=0):
 def main(argv):
     """Main entry"""
     valleys = False
+    truncate = True
     src_filename = dst_filename = None
     while argv:
         if argv[0][0] == '-':
@@ -212,11 +213,6 @@ def main(argv):
     if dst_ds is None:
         return print_help('Unable to create "%s"'%src_filename)
 
-    dst_layer = gdal_utils.gdal_vect_layer.create(dst_ds, VECTOR_LAYER_NAME(valleys), dem_band.get_spatial_ref())
-    if dst_layer is None:
-        print('Error: Unable to create layer', file=sys.stderr)
-        return 1
-
     # Trace ridges/valleys
     dem_band.load()
     start = time.time()
@@ -232,8 +228,19 @@ def main(argv):
     duration = time.time() - start
     print('Created total %d polylines, first %d, last %d points, %d sec'%(len(polylines), len(polylines[0]), len(polylines[-1]), duration))
 
-    if dst_layer:
+    if dst_ds:
         start = time.time()
+        # Delete existing layers
+        if truncate:
+            for i in reversed(range(dst_ds.get_layer_count())):
+                print('  Deleting layer', gdal_utils.gdal_vect_layer(dst_ds, i).get_name())
+                dst_ds.delete_layer(i)
+        # Create new one
+        dst_layer = gdal_utils.gdal_vect_layer.create(dst_ds, VECTOR_LAYER_NAME(valleys), dem_band.get_spatial_ref())
+        if dst_layer is None:
+            print('Error: Unable to create layer', file=sys.stderr)
+            return 1
+
         for pline in polylines:
             geom = dst_layer.create_feature_geometry(gdal_utils.wkbLineString)
             for x_y in pline:

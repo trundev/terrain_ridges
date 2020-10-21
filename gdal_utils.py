@@ -81,6 +81,12 @@ class gdal_dataset:
     def get_spatial_ref(self):
         return self.dataset.GetSpatialRef()
 
+    def get_layer_count(self):
+        return self.dataset.GetLayerCount()
+
+    def delete_layer(self, layer):
+        return self.dataset.DeleteLayer(layer)
+
 #
 # GDAL raster data helpers
 #
@@ -214,7 +220,7 @@ class gdal_vect_layer(gdal_dataset):
     def __init__(self, dataset, i=None):
         super(gdal_vect_layer, self).__init__(dataset)
         if i is not None:
-            self.layer = self.dataset.GetLayer(i)
+            self.layer = self.dataset.dataset.GetLayer(i)
 
     @staticmethod
     def create(dataset, name, srs=None, geom_type=wkbUnknown):
@@ -225,6 +231,9 @@ class gdal_vect_layer(gdal_dataset):
         ret = gdal_vect_layer(dataset.dataset)
         ret.layer = layer
         return ret
+
+    def get_name(self):
+        return self.layer.GetName()
 
     def create_field(self, name, is_str=False):
         fd = ogr.FieldDefn(name, ogr.OFTString if is_str else ogr.OFTReal)
