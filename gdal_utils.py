@@ -13,11 +13,15 @@ import pyproj
 #
 def write_arr(arr, x_y, val):
     """Put data to multiple indices in array"""
+    if x_y.ndim < 3:
+        arr[tuple(x_y.T)] = val     # Performance optimization
     # Avoid numpy "Advanced Indexing"
     arr[tuple(numpy.moveaxis(x_y, -1, 0))] = val
 
 def read_arr(arr, x_y):
     """Get multiple indices from array"""
+    if x_y.ndim < 3:
+        return arr[tuple(x_y.T)]    # Performance optimization
     # Force numpy "Basic Indexing", note that '[x_y]' will trigger "Advanced Indexing"
     return arr[tuple(numpy.moveaxis(x_y, -1, 0))]
 
