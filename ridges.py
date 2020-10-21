@@ -103,6 +103,7 @@ def trace_ridges(dem_band, valleys=False):
     result_lines = []
 
     distance = gdal_utils.geod_distance(dem_band)
+    old_tentative_len = 1
     while tentative:
         x_y = tentative.pop()
         #print('    Processing point %s alt %s'%(x_y, dem_band.get_elevation(seed_xy)))
@@ -130,6 +131,12 @@ def trace_ridges(dem_band, valleys=False):
                     return -1 if alt <= dem_band.get_elevation(check_xy) else 1
                 idx, _ = search_sorted(tentative, cmp_fn)
                 tentative.insert(idx, t_xy)
+        #
+        # Progress
+        #
+        if abs(old_tentative_len - len(tentative)) / old_tentative_len > .5:
+            print('  Tentatives', len(tentative), 'completed', len(result_lines))
+            old_tentative_len = len(tentative)
 
         if end_of_line:
             dist = trace_distance(prev_arr, x_y)
