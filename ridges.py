@@ -10,6 +10,7 @@ import gdal_utils
 #    2  3  4
 VALID_NEIGHBORS = (-4, -3, -2, -1, 1, 2, 3, 4)
 NEIGHBOR_SELF = 0
+NEIGHBOR_PENDING = 100
 NEIGHBOR_INVALID = -100
 NEIGHBOR_IDX_DTYPE = numpy.int8
 
@@ -84,11 +85,11 @@ def trace_ridges(dem_band, valleys=False):
     # Previous index and distance array
     # Initialize with invalid value.
     #
-    prev_arr = numpy.full(dem_band.dem_buf.shape, NEIGHBOR_INVALID, dtype=[
+    prev_arr = numpy.full(dem_band.dem_buf.shape, NEIGHBOR_PENDING, dtype=[
             ('n_idx', NEIGHBOR_IDX_DTYPE),
             ('dist', numpy.float),
         ])
-    gdal_utils.write_arr(prev_arr['n_idx'], seed_xy, NEIGHBOR_SELF)
+    gdal_utils.write_arr(prev_arr, seed_xy, (NEIGHBOR_SELF, 0.))
 
     #
     # Tentative point list (coord)
@@ -107,10 +108,15 @@ def trace_ridges(dem_band, valleys=False):
         #print('    Processing point %s alt %s'%(x_y, dem_band.get_elevation(seed_xy)))
         end_of_line = True
         for t_xy, n_idx in valid_neighbors(dem_band, x_y):
-            if gdal_utils.read_arr(prev_arr['n_idx'], t_xy) == NEIGHBOR_INVALID:
+            if gdal_utils.read_arr(prev_arr['n_idx'], t_xy) == NEIGHBOR_PENDING:
+                n_dist = distance.get_distance(x_y, t_xy)
+                if numpy.isnan(n_dist):
+                    # Stop at this point as the altitude is unknown
+                    gdal_utils.write_arr(prev_arr, t_xy, (NEIGHBOR_INVALID, 0.))
+                    continue
+
                 end_of_line = False
                 # Keep the inverted neighbor index to later track this back
-                n_dist = distance.get_distance(x_y, t_xy)
                 gdal_utils.write_arr(prev_arr, t_xy, (neighbor_inv(n_idx), n_dist))
                 alt = dem_band.get_elevation(t_xy)
                 # Insert the point in 'tentative' by keeping it sorted by altitude
