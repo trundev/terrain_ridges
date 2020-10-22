@@ -189,11 +189,16 @@ class geod_distance:
 
     def get_distance(self, xy0, xy1):
         """Calculate distance between two points"""
+        lonlatalt = self.dem_band.xy2lonlatalt(numpy.stack((xy0, xy1), axis=-2))
+        disp = lonlatalt[...,1,2] - lonlatalt[...,0,2]
         # Precise method by calling pyproj.Geod.inv() between points
-        lonlatalt = self.dem_band.xy2lonlatalt(numpy.stack((xy0, xy1)))
-        _, _, dist = self.geod.inv(*lonlatalt[:,:2].flatten())
+        lonlat = lonlatalt[...,:2].reshape([*lonlatalt.shape[:-2], -1])
+        if lonlat.ndim < 3:
+            lonlat = lonlat.T       # Performance optimization
+        else:
+            lonlat = numpy.moveaxis(lonlat, -1, 0)
+        _, _, dist = self.geod.inv(*lonlat)
         # Adjust distance with the altitude displacement
-        disp = lonlatalt[1,2] - lonlatalt[0,2]
         return numpy.sqrt(dist*dist + disp*disp)
 
 def dem_open(filename, band=1):
