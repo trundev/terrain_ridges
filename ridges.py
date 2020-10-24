@@ -5,13 +5,13 @@ import numpy
 import gdal_utils
 
 # Neighbor indices:
-#   -4 -3 -2
-#   -1 <0> 1
-#    2  3  4
-VALID_NEIGHBORS = (-4, -3, -2, -1, 1, 2, 3, 4)
-NEIGHBOR_SELF = 0
-NEIGHBOR_PENDING = 100
-NEIGHBOR_INVALID = -100
+#   0 1 2
+#   3<4>5
+#   6 7 8
+VALID_NEIGHBORS = numpy.array((0, 1, 2, 3, 5, 6, 7, 8))
+NEIGHBOR_SELF = 4
+NEIGHBOR_PENDING = -1
+NEIGHBOR_INVALID = -2
 NEIGHBOR_IDX_DTYPE = numpy.int8
 
 def VECTOR_LAYER_NAME(valleys): return 'valleys' if valleys else 'ridges'
@@ -40,23 +40,31 @@ def search_sorted(array, cmp_fn, *args):
 #
 def neighbor_xy(x_y, neighbor_idx):
     """Get the coordinates of a neighbor pixel"""
-    if neighbor_idx < -4 or neighbor_idx > 4:
-        return None
-    neighbor_idx += 4
-    return x_y + [neighbor_idx % 3 - 1, neighbor_idx // 3 - 1]
-
-def valid_neighbors(dem_band, x_y):
-    """Return list of valid neighbor points"""
-    for idx in VALID_NEIGHBORS:
-        nxy = neighbor_xy(x_y, idx)
-        if dem_band.in_bounds(nxy):
-            yield nxy, idx
+    return x_y + numpy.stack((neighbor_idx % 3 - 1, neighbor_idx // 3 - 1), -1)
 
 def neighbor_inv(neighbor_idx):
     """Get the inverted neighbor idx"""
-    if neighbor_idx in VALID_NEIGHBORS:
-        return -neighbor_idx
-    return None
+    return 8 - neighbor_idx
+
+def neighbor_xy_safe(x_y, neighbor_idx):
+    """Get the coordinates of a neighbor pixel, handle invalid indices"""
+    res_xy = neighbor_xy(x_y, neighbor_idx)
+    # Threat NEIGHBOR_PENDING and NEIGHBOR_INVALID as NEIGHBOR_SELF,
+    # to ensure the raster coordinates are valid
+    mask = neighbor_idx < 0
+    if mask.any():
+        res_xy[mask] = x_y[mask]
+    return res_xy
+
+def valid_neighbors(dem_band, x_y):
+    """Return list of valid neighbor points"""
+    n_xy = neighbor_xy(x_y[...,numpy.newaxis,:], VALID_NEIGHBORS)
+    n_idx = numpy.broadcast_to(VALID_NEIGHBORS, n_xy.shape[:-1])
+    mask = dem_band.in_bounds(n_xy)
+    if not mask.all():
+        n_xy = n_xy[mask]
+        n_idx = n_idx[mask]
+    return zip(n_xy, n_idx)
 
 def trace_distance(prev_arr, x_y):
     """Calculate trace distance"""
