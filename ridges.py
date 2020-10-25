@@ -4,15 +4,21 @@ import time
 import numpy
 import gdal_utils
 
-# Neighbor indices:
+# Neighbor directions:
 #   0 1 2
 #   3<4>5
 #   6 7 8
-VALID_NEIGHBORS = numpy.array((0, 1, 2, 3, 5, 6, 7, 8))
+VALID_NEIGHBOR_DIRS = numpy.array((0, 1, 2, 3, 5, 6, 7, 8))
 NEIGHBOR_SELF = 4
-NEIGHBOR_PENDING = -1
-NEIGHBOR_INVALID = -2
-NEIGHBOR_IDX_DTYPE = numpy.int8
+NEIGHBOR_LAST_VALID = 8
+NEIGHBOR_PENDING = 9
+NEIGHBOR_SEED = 10
+NEIGHBOR_STOP = 11
+NEIGHBOR_INVALID = 12
+NEIGHBOR_DIR_DTYPE = numpy.int8
+
+# Keep the seed away from the edges
+SEED_INFLATE = 1
 
 def VECTOR_LAYER_NAME(valleys): return 'valleys' if valleys else 'ridges'
 
@@ -38,43 +44,43 @@ def search_sorted(array, cmp_fn, *args):
 #
 # Main processing
 #
-def neighbor_xy(x_y, neighbor_idx):
+def neighbor_xy(x_y, neighbor_dir):
     """Get the coordinates of a neighbor pixel"""
-    return x_y + numpy.stack((neighbor_idx % 3 - 1, neighbor_idx // 3 - 1), -1)
+    return x_y + numpy.stack((neighbor_dir % 3 - 1, neighbor_dir // 3 - 1), -1)
 
-def neighbor_inv(neighbor_idx):
-    """Get the inverted neighbor idx"""
-    return 8 - neighbor_idx
+def neighbor_flip(neighbor_dir):
+    """Get the inverted neighbor direction"""
+    return NEIGHBOR_LAST_VALID - neighbor_dir
 
-def neighbor_xy_safe(x_y, neighbor_idx):
-    """Get the coordinates of a neighbor pixel, handle invalid indices"""
-    res_xy = neighbor_xy(x_y, neighbor_idx)
+def neighbor_xy_safe(x_y, neighbor_dir):
+    """Get the coordinates of a neighbor pixel, handle invalid directions"""
+    res_xy = neighbor_xy(x_y, neighbor_dir)
     # Threat NEIGHBOR_PENDING and NEIGHBOR_INVALID as NEIGHBOR_SELF,
     # to ensure the raster coordinates are valid
-    mask = neighbor_idx < 0
+    mask = neighbor_dir > NEIGHBOR_LAST_VALID
     if mask.any():
         res_xy[mask] = x_y[mask]
     return res_xy
 
 def valid_neighbors(dem_band, x_y):
     """Return list of valid neighbor points"""
-    n_xy = neighbor_xy(x_y[...,numpy.newaxis,:], VALID_NEIGHBORS)
-    n_idx = numpy.broadcast_to(VALID_NEIGHBORS, n_xy.shape[:-1])
+    n_xy = neighbor_xy(x_y[...,numpy.newaxis,:], VALID_NEIGHBOR_DIRS)
+    n_dir = numpy.broadcast_to(VALID_NEIGHBOR_DIRS, n_xy.shape[:-1])
     mask = dem_band.in_bounds(n_xy)
     if not mask.all():
         n_xy = n_xy[mask]
-        n_idx = n_idx[mask]
-    return zip(n_xy, n_idx)
+        n_dir = n_dir[mask]
+    return zip(n_xy, n_dir)
 
-def trace_distance(prev_arr, x_y):
-    """Calculate trace distance"""
+def measure_distance(dir_dist_arr, x_y):
+    """Calculate total trace distance"""
     dist = 0.
     while True:
-        n_idx, n_dist = gdal_utils.read_arr(prev_arr, x_y)
-        if n_idx == NEIGHBOR_SELF:
+        n_dir, n_dist = gdal_utils.read_arr(dir_dist_arr, x_y)
+        if n_dir > NEIGHBOR_LAST_VALID:
             return dist
         dist += n_dist
-        x_y = neighbor_xy(x_y, n_idx)
+        x_y = neighbor_xy(x_y, n_dir)
 
 def result_lines_insert(result_lines, entry):
     """Insert entry in result_lines by keeping it sorted by distance (entry[1])"""
@@ -83,21 +89,22 @@ def result_lines_insert(result_lines, entry):
 
 def trace_ridges(dem_band, valleys=False):
     """Generate terrain ridges or valleys"""
-    # Start at the max/min altitude (first one)
-    flat_idx = dem_band.dem_buf.argmin() if valleys else dem_band.dem_buf.argmax()
-    seed_xy = numpy.unravel_index(flat_idx, dem_band.dem_buf.shape)
-    seed_xy = numpy.array(seed_xy)
+    # Start at the max/min altitude (first one, away from edges)
+    inflated_buf = dem_band.dem_buf[SEED_INFLATE:-SEED_INFLATE,SEED_INFLATE:-SEED_INFLATE]
+    flat_idx = inflated_buf.argmin() if valleys else inflated_buf.argmax()
+    seed_xy = numpy.unravel_index(flat_idx, inflated_buf.shape)
+    seed_xy = numpy.array(seed_xy) + [SEED_INFLATE, SEED_INFLATE]
     print('Seed point', seed_xy, ', altitude', dem_band.get_elevation(seed_xy))
 
     #
-    # Previous index and distance array
+    # Neighbor directions and distance array
     # Initialize with invalid value.
     #
-    prev_arr = numpy.full(dem_band.dem_buf.shape, NEIGHBOR_PENDING, dtype=[
-            ('n_idx', NEIGHBOR_IDX_DTYPE),
+    dir_arr = numpy.full(dem_band.dem_buf.shape, NEIGHBOR_PENDING, dtype=[
+            ('n_dir', NEIGHBOR_DIR_DTYPE),
             ('dist', numpy.float),
         ])
-    gdal_utils.write_arr(prev_arr, seed_xy, (NEIGHBOR_SELF, 0.))
+    gdal_utils.write_arr(dir_arr, seed_xy, (NEIGHBOR_SEED, 0.))
 
     #
     # Tentative point list (coord)
@@ -116,17 +123,17 @@ def trace_ridges(dem_band, valleys=False):
         x_y = tentative.pop()
         #print('    Processing point %s alt %s'%(x_y, dem_band.get_elevation(seed_xy)))
         end_of_line = True
-        for t_xy, n_idx in valid_neighbors(dem_band, x_y):
-            if gdal_utils.read_arr(prev_arr['n_idx'], t_xy) == NEIGHBOR_PENDING:
+        for t_xy, n_dir in valid_neighbors(dem_band, x_y):
+            if gdal_utils.read_arr(dir_arr['n_dir'], t_xy) == NEIGHBOR_PENDING:
                 n_dist = distance.get_distance(x_y, t_xy)
                 if numpy.isnan(n_dist):
                     # Stop at this point as the altitude is unknown
-                    gdal_utils.write_arr(prev_arr, t_xy, (NEIGHBOR_INVALID, 0.))
+                    gdal_utils.write_arr(dir_arr, t_xy, (NEIGHBOR_INVALID, 0.))
                     continue
 
                 end_of_line = False
-                # Keep the inverted neighbor index to later track this back
-                gdal_utils.write_arr(prev_arr, t_xy, (neighbor_inv(n_idx), n_dist))
+                # Keep the flipped neighbor direction to later track this back
+                gdal_utils.write_arr(dir_arr, t_xy, (neighbor_flip(n_dir), n_dist))
                 alt = dem_band.get_elevation(t_xy)
                 # Insert the point in 'tentative' by keeping it sorted by altitude
                 def cmp_fn(check_xy, *args):
@@ -147,14 +154,14 @@ def trace_ridges(dem_band, valleys=False):
             old_tentative_len = len(tentative)
 
         if end_of_line:
-            dist = trace_distance(prev_arr, x_y)
+            dist = measure_distance(dir_arr, x_y)
             #print('  Line finished at point %s total length %d'%(x_y, dist))
             # Keep this end-point in 'result_lines'
             result_lines_insert(result_lines, (x_y, dist))
 
-    return result_lines, prev_arr
+    return result_lines, dir_arr
 
-def combine_lines(result_lines, prev_arr, min_len=0):
+def combine_lines(result_lines, dir_arr, min_len=0):
     """Create polylines from previously generated ridges or valleys"""
     polylines = []
     # Process the lines lenger than min_len
@@ -165,10 +172,10 @@ def combine_lines(result_lines, prev_arr, min_len=0):
         # Trace route
         while x_y is not None:
             pline.append(x_y)
-            n_idx = gdal_utils.read_arr(prev_arr['n_idx'], x_y)
+            n_dir = gdal_utils.read_arr(dir_arr['n_dir'], x_y)
             # Stop other lines from overlapping that one
-            gdal_utils.write_arr(prev_arr['n_idx'], x_y, NEIGHBOR_SELF)
-            x_y = None if n_idx == NEIGHBOR_SELF else neighbor_xy(x_y, n_idx)
+            gdal_utils.write_arr(dir_arr['n_dir'], x_y, NEIGHBOR_STOP)
+            x_y = None if n_dir > NEIGHBOR_LAST_VALID else neighbor_xy(x_y, n_dir)
         polylines.append(pline)
 
         # Update distances after some of the lines were cut
@@ -176,7 +183,7 @@ def combine_lines(result_lines, prev_arr, min_len=0):
         idx = 0
         while idx < len(result_lines):
             x_y, old_dist = result_lines[idx]
-            dist = trace_distance(prev_arr, x_y)
+            dist = measure_distance(dir_arr, x_y)
             if dist == old_dist:
                 idx += 1
             else:
@@ -224,7 +231,7 @@ def main(argv):
     # Trace ridges/valleys
     dem_band.load()
     start = time.time()
-    result_lines, prev_arr = trace_ridges(dem_band, valleys)
+    result_lines, dir_arr = trace_ridges(dem_band, valleys)
     if result_lines is None:
         return 1
     duration = time.time() - start
@@ -232,7 +239,7 @@ def main(argv):
 
     # Combine traced lines, longer than quarter of the longest one
     start = time.time()
-    polylines = combine_lines(result_lines, prev_arr, result_lines[0][1] / 4)
+    polylines = combine_lines(result_lines, dir_arr, result_lines[0][1] / 4)
     duration = time.time() - start
     print('Created total %d polylines, first %d, last %d points, %d sec'%(len(polylines), len(polylines[0]), len(polylines[-1]), duration))
 
