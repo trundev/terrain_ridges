@@ -273,6 +273,12 @@ class gdal_feature_geometry:
     def add_point(self, *coord):
         self.geom.AddPoint(*coord)
 
+    def get_style_string(self):
+        return self.feat.GetStyleString()
+
+    def set_style_string(self, string):
+        self.feat.SetStyleString(string)
+
     def create(self):
         self.feat.SetGeometry(self.geom)
         self.layer.CreateFeature(self.feat)

@@ -22,6 +22,7 @@ VALID_NEIGHBOR_DIRS = numpy.array(VALID_NEIGHBOR_DIRS, dtype=NEIGHBOR_DIR_DTYPE)
 SEED_INFLATE = 1
 
 def VECTOR_LAYER_NAME(valleys): return 'valleys' if valleys else 'ridges'
+def VECTOR_FEATURE_STYLE(valleys): return 'PEN(c:#0000FF,w:2px)' if valleys else 'PEN(c:#FF0000,w:2px)'
 
 #
 # Generic tools
@@ -224,7 +225,7 @@ def combine_lines(result_lines, dir_arr, min_len=0):
             # Stop other lines from overlapping that one
             gdal_utils.write_arr(dir_arr['n_dir'], x_y, NEIGHBOR_STOP)
             x_y = None if neighbor_is_invalid(n_dir) else neighbor_xy(x_y, n_dir)
-        polylines.append(pline)
+        polylines.append((dist, pline))
 
         # Update distances after some of the lines were cut
         print('  Update remaining %d lines: mid/min len %d/%d'%(len(result_lines), result_lines[len(result_lines)//2][1], result_lines[-1][1]))
@@ -320,8 +321,13 @@ def main(argv):
             print('Error: Unable to create layer', file=sys.stderr)
             return 1
 
-        for pline in polylines:
+        # Add fields
+        dst_layer.create_field('Name', True)    # KML <name>
+
+        for dist, pline in polylines:
             geom = dst_layer.create_feature_geometry(gdal_utils.wkbLineString)
+            geom.set_field('Name', '%dm'%dist if dist < 10000 else '%dkm'%round(dist/1000))
+            geom.set_style_string(VECTOR_FEATURE_STYLE(valleys))
             for x_y in pline:
                 geom.add_point(*dem_band.xy2lonlatalt(x_y))
             geom.create()
