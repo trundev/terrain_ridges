@@ -90,21 +90,28 @@ def result_lines_insert(result_lines, entry):
 def trace_ridges(dem_band, valleys=False):
     """Generate terrain ridges or valleys"""
     # Start at the max/min altitude (first one, away from edges)
-    inflated_buf = dem_band.dem_buf[SEED_INFLATE:-SEED_INFLATE,SEED_INFLATE:-SEED_INFLATE]
-    flat_idx = inflated_buf.argmin() if valleys else inflated_buf.argmax()
-    seed_xy = numpy.unravel_index(flat_idx, inflated_buf.shape)
+    elevations = dem_band.get_elevation(True)
+    deflated_buf = elevations[SEED_INFLATE:-SEED_INFLATE,SEED_INFLATE:-SEED_INFLATE]
+    flat_idx = numpy.nanargmin(deflated_buf) if valleys else numpy.nanargmax(deflated_buf)
+    seed_xy = numpy.unravel_index(flat_idx, deflated_buf.shape)
     seed_xy = numpy.array(seed_xy) + [SEED_INFLATE, SEED_INFLATE]
-    print('Seed point', seed_xy, ', altitude', dem_band.get_elevation(seed_xy))
+    print('Tracing', 'valleys' if valleys else 'ridges',
+          'from seed point', seed_xy,
+          ', altitude', dem_band.get_elevation(seed_xy))
 
     #
     # Neighbor directions and distance array
-    # Initialize with invalid value.
+    # Initialize the points to be processed with 'pending' value.
     #
-    dir_arr = numpy.full(dem_band.dem_buf.shape, NEIGHBOR_PENDING, dtype=[
+    dir_arr = numpy.empty(elevations.shape, dtype=[
             ('n_dir', NEIGHBOR_DIR_DTYPE),
             ('dist', numpy.float),
         ])
+    dir_arr['n_dir'] = NEIGHBOR_PENDING
+    dir_arr['dist'] = numpy.nan
+    dir_arr['n_dir'][numpy.isnan(elevations)] = NEIGHBOR_INVALID
     gdal_utils.write_arr(dir_arr, seed_xy, (NEIGHBOR_SEED, 0.))
+    del elevations
 
     #
     # Tentative point list (coord)
@@ -125,16 +132,12 @@ def trace_ridges(dem_band, valleys=False):
         end_of_line = True
         for t_xy, n_dir in valid_neighbors(dem_band, x_y):
             if gdal_utils.read_arr(dir_arr['n_dir'], t_xy) == NEIGHBOR_PENDING:
-                n_dist = distance.get_distance(x_y, t_xy)
-                if numpy.isnan(n_dist):
-                    # Stop at this point as the altitude is unknown
-                    gdal_utils.write_arr(dir_arr, t_xy, (NEIGHBOR_INVALID, 0.))
-                    continue
-
                 end_of_line = False
                 # Keep the flipped neighbor direction to later track this back
+                n_dist = distance.get_distance(x_y, t_xy)
                 gdal_utils.write_arr(dir_arr, t_xy, (neighbor_flip(n_dir), n_dist))
                 alt = dem_band.get_elevation(t_xy)
+                assert not numpy.isnan(alt), '"NoDataValue" point %s is marked for processing'%t_xy
                 # Insert the point in 'tentative' by keeping it sorted by altitude
                 def cmp_fn(check_xy, *args):
                     # The duplicated altitudes are placed at lowest possible index (<= or >=).

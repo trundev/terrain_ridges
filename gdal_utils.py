@@ -138,8 +138,11 @@ class gdal_dem_band(gdal_dataset):
             (x_y < self.dem_buf.shape).all(-1))
 
     def get_elevation(self, x_y):
-        """Retrieve elevation(s)"""
-        alt = read_arr(self.dem_buf, x_y)
+        """Retrieve elevation(s), when "x_y is True" - complete array"""
+        if x_y is True:
+            alt = self.dem_buf
+        else:
+            alt = read_arr(self.dem_buf, x_y)
         # Replace the GDAL "NoDataValue" with NaN
         if self.nodata_val is not None:
             # Convert to float (specifically xform-type) to allow NaN assignment
