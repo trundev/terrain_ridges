@@ -87,14 +87,37 @@ def result_lines_insert(result_lines, entry):
     idx, _ = search_sorted(result_lines, lambda v: 1 if entry[1] < v[1] else -1)
     result_lines.insert(idx, entry)
 
+def select_seed(elevations, valleys, mask=None):
+    """Select a point to start ridge/valley tracing"""
+    if mask is None:
+        mask = numpy.isnan(elevations)
+
+    # Keep the original mask if shrinking turns to disaster
+    orig_mask = mask.copy()
+
+    # Shrink/mask boundaries to select the seed away from edges
+    if elevations.shape[0] > 2 * SEED_INFLATE:
+        mask[:SEED_INFLATE,:] = True
+        mask[-SEED_INFLATE:,:] = True
+    if elevations.shape[1] > 2 * SEED_INFLATE:
+        mask[:,:SEED_INFLATE] = True
+        mask[:,-SEED_INFLATE:] = True
+
+    # Revert the mask if we have masked everything
+    if mask.all():
+        mask = orig_mask
+
+    # Use MaskedArray array to find min/max
+    elevations = numpy.ma.array(elevations, mask=mask)
+    flat_idx = elevations.argmin() if valleys else elevations.argmax()
+    seed_xy = numpy.unravel_index(flat_idx, elevations.shape)
+    return numpy.array(seed_xy)
+
 def trace_ridges(dem_band, valleys=False):
     """Generate terrain ridges or valleys"""
     # Start at the max/min altitude (first one, away from edges)
     elevations = dem_band.get_elevation(True)
-    deflated_buf = elevations[SEED_INFLATE:-SEED_INFLATE,SEED_INFLATE:-SEED_INFLATE]
-    flat_idx = numpy.nanargmin(deflated_buf) if valleys else numpy.nanargmax(deflated_buf)
-    seed_xy = numpy.unravel_index(flat_idx, deflated_buf.shape)
-    seed_xy = numpy.array(seed_xy) + [SEED_INFLATE, SEED_INFLATE]
+    seed_xy = select_seed(elevations, valleys)
     print('Tracing', 'valleys' if valleys else 'ridges',
           'from seed point', seed_xy,
           ', altitude', dem_band.get_elevation(seed_xy))
@@ -159,8 +182,21 @@ def trace_ridges(dem_band, valleys=False):
         if end_of_line:
             dist = measure_distance(dir_arr, x_y)
             #print('  Line finished at point %s total length %d'%(x_y, dist))
-            # Keep this end-point in 'result_lines'
-            result_lines_insert(result_lines, (x_y, dist))
+            # Keep this end-point in 'result_lines', but if it's at least one pixel
+            if gdal_utils.read_arr(dir_arr['n_dir'], x_y) != NEIGHBOR_SEED:
+                result_lines_insert(result_lines, (x_y, dist))
+
+            # After the 'tentative' is exhausted, there still can be islands of valid elevations,
+            # that were not processed, because of the surrounding invalid ones
+            if not tentative:
+                mask = dir_arr['n_dir'] == NEIGHBOR_PENDING
+                if mask.any():
+                    # Restart at the highest/lowest unprocessed point
+                    seed_xy = select_seed(dem_band.get_elevation(True), valleys, numpy.logical_not(mask))
+                    print('Restart tracing from seed point', seed_xy, ', altitude', dem_band.get_elevation(seed_xy))
+                    gdal_utils.write_arr(dir_arr, seed_xy, NEIGHBOR_SEED)
+                    tentative.append(seed_xy)
+                    old_tentative_len = 1
 
     return result_lines, dir_arr
 
