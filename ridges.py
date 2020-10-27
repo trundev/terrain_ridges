@@ -8,7 +8,7 @@ import gdal_utils
 #   0 1 2
 #   3<4>5
 #   6 7 8
-VALID_NEIGHBOR_DIRS = numpy.array((0, 1, 2, 3, 5, 6, 7, 8))
+VALID_NEIGHBOR_DIRS = (0, 1, 2, 3, 5, 6, 7, 8)
 NEIGHBOR_SELF = 4
 NEIGHBOR_LAST_VALID = 8
 NEIGHBOR_PENDING = 9
@@ -16,6 +16,7 @@ NEIGHBOR_SEED = 10
 NEIGHBOR_STOP = 11
 NEIGHBOR_INVALID = 12
 NEIGHBOR_DIR_DTYPE = numpy.int8
+VALID_NEIGHBOR_DIRS = numpy.array(VALID_NEIGHBOR_DIRS, dtype=NEIGHBOR_DIR_DTYPE)
 
 # Keep the seed away from the edges
 SEED_INFLATE = 1
@@ -111,7 +112,7 @@ def select_seed(elevations, valleys, mask=None):
     elevations = numpy.ma.array(elevations, mask=mask)
     flat_idx = elevations.argmin() if valleys else elevations.argmax()
     seed_xy = numpy.unravel_index(flat_idx, elevations.shape)
-    return numpy.array(seed_xy)
+    return numpy.array(seed_xy, dtype=numpy.int32)
 
 def trace_ridges(dem_band, valleys=False):
     """Generate terrain ridges or valleys"""

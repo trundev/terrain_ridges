@@ -129,6 +129,16 @@ class gdal_dem_band(gdal_dataset):
         self.update_xform(numpy.array([xstart, ystart]))
         # Create GEOGCS transformation, to be used by xy2lonlat() (non-geographics only)
         self.geogcs_xform = self.build_geogcs_xform()
+
+        # Replace the GDAL "NoDataValue" with NaN
+        if self.nodata_val is not None:
+            # Convert 'dem_buf' to float (specifically xform-type) to allow NaN assignment
+            if self.dem_buf.dtype.kind != 'f':
+                alt_f = numpy.array(self.dem_buf, dtype=self.xform.dtype) 
+                alt_f[self.dem_buf == self.nodata_val] = numpy.nan
+                self.dem_buf = alt_f
+            else:
+                self.dem_buf[self.dem_buf == self.nodata_val] = numpy.nan
         return True
 
     def in_bounds(self, x_y):
@@ -143,15 +153,6 @@ class gdal_dem_band(gdal_dataset):
             alt = self.dem_buf
         else:
             alt = read_arr(self.dem_buf, x_y)
-        # Replace the GDAL "NoDataValue" with NaN
-        if self.nodata_val is not None:
-            # Convert to float (specifically xform-type) to allow NaN assignment
-            if alt.dtype.kind != 'f':
-                alt_f = numpy.array(alt, dtype=self.xform.dtype) 
-                alt_f[alt == self.nodata_val] = numpy.nan
-                alt = alt_f
-            else:
-                alt[alt == self.nodata_val] = numpy.nan
         return alt
 
     def xy2coords(self, x_y):
