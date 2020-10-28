@@ -63,6 +63,10 @@ def neighbor_xy_safe(x_y, neighbor_dir):
         res_xy[mask] = x_y[mask]
     return res_xy
 
+def neighbor_is_invalid(neighbor_dir):
+    """Return mask of where the neighbor directions are invalid"""
+    return neighbor_dir > NEIGHBOR_LAST_VALID
+
 def valid_neighbors(dem_band, x_y):
     """Return list of valid neighbor points"""
     n_xy = neighbor_xy(x_y[...,numpy.newaxis,:], VALID_NEIGHBOR_DIRS)
@@ -78,15 +82,15 @@ def measure_distance(dir_dist_arr, x_y):
     dist = 0.
     while True:
         n_dir, n_dist = gdal_utils.read_arr(dir_dist_arr, x_y)
-        if n_dir > NEIGHBOR_LAST_VALID:
+        if neighbor_is_invalid(n_dir):
             return dist
         dist += n_dist
         x_y = neighbor_xy(x_y, n_dir)
 
-def result_lines_insert(result_lines, entry):
+def result_lines_insert(result_lines, entry, start=0):
     """Insert entry in result_lines by keeping it sorted by distance (entry[1])"""
-    idx, _ = search_sorted(result_lines, lambda v: 1 if entry[1] < v[1] else -1)
-    result_lines.insert(idx, entry)
+    idx, _ = search_sorted(result_lines[start:], lambda v: 1 if entry[1] < v[1] else -1)
+    result_lines.insert(idx + start, entry)
 
 def select_seed(elevations, valleys, mask=None):
     """Select a point to start ridge/valley tracing"""
@@ -204,9 +208,13 @@ def trace_ridges(dem_band, valleys=False):
 def combine_lines(result_lines, dir_arr, min_len=0):
     """Create polylines from previously generated ridges or valleys"""
     polylines = []
-    # Process the lines lenger than min_len
-    while result_lines[0][1] > min_len:
+    # Process the lines longer than min_len
+    prev_dist = numpy.inf    # Assert only
+    while result_lines:
         x_y, dist = result_lines.pop(0)
+        assert dist <= prev_dist, 'Unsorted result_lines %d->%d'%(prev_dist, dist); prev_dist = dist
+        if dist < min_len:
+            break
         print('Generating line starting at point %s total length %d'%(x_y, dist))
         pline = []
         # Trace route
@@ -215,11 +223,11 @@ def combine_lines(result_lines, dir_arr, min_len=0):
             n_dir = gdal_utils.read_arr(dir_arr['n_dir'], x_y)
             # Stop other lines from overlapping that one
             gdal_utils.write_arr(dir_arr['n_dir'], x_y, NEIGHBOR_STOP)
-            x_y = None if n_dir > NEIGHBOR_LAST_VALID else neighbor_xy(x_y, n_dir)
+            x_y = None if neighbor_is_invalid(n_dir) else neighbor_xy(x_y, n_dir)
         polylines.append(pline)
 
         # Update distances after some of the lines were cut
-        print('  Updating line distances')
+        print('  Update remaining %d lines: mid/min len %d/%d'%(len(result_lines), result_lines[len(result_lines)//2][1], result_lines[-1][1]))
         idx = 0
         while idx < len(result_lines):
             x_y, old_dist = result_lines[idx]
@@ -227,9 +235,12 @@ def combine_lines(result_lines, dir_arr, min_len=0):
             if dist == old_dist:
                 idx += 1
             else:
+                assert dist < old_dist, 'Line distance was increased %d->%d'%(old_dist, dist)
                 # Move the entry to keep 'result_lines' sorted by distance
                 del result_lines[idx]
-                result_lines_insert(result_lines, (x_y, dist))
+                if dist > min_len:
+                    print('    Updating line at %d/%d, distance %d->%d'%(idx, len(result_lines), old_dist, dist))
+                    result_lines_insert(result_lines, (x_y, dist), idx)
 
     return polylines
 
@@ -268,18 +279,31 @@ def main(argv):
     if dst_ds is None:
         return print_help('Unable to create "%s"'%src_filename)
 
-    # Trace ridges/valleys
     dem_band.load()
+
+    #
+    # Trace ridges/valleys
+    #
     start = time.time()
+
     result_lines, dir_arr = trace_ridges(dem_band, valleys)
     if result_lines is None:
-        return 1
+        print('Error: Failed to trace ridges', file=sys.stderr)
+        return 2
+
     duration = time.time() - start
     print('Traced total %d lines, max length %d, %d sec'%(len(result_lines), result_lines[0][1], duration))
 
+    #
     # Combine traced lines, longer than quarter of the longest one
+    #
     start = time.time()
+
     polylines = combine_lines(result_lines, dir_arr, result_lines[0][1] / 4)
+    if not polylines:
+        print('Error: Failed to combine lines', file=sys.stderr)
+        return 2
+
     duration = time.time() - start
     print('Created total %d polylines, first %d, last %d points, %d sec'%(len(polylines), len(polylines[0]), len(polylines[-1]), duration))
 
