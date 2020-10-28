@@ -85,14 +85,13 @@ def valid_neighbors(dem_band, x_y):
         n_dir = n_dir[mask]
     return zip(n_xy, n_dir)
 
-def measure_distance(dir_dist_arr, x_y):
-    """Calculate total trace distance"""
-    dist = 0.
+def reduced_distance(dir_arr, x_y):
+    """Calculate trace distance upto the next NEIGHBOR_STOP"""
+    start_dist = gdal_utils.read_arr(dir_arr['dist'], x_y)
     while True:
-        n_dir, n_dist = gdal_utils.read_arr(dir_dist_arr, x_y)
+        n_dir, dist = gdal_utils.read_arr(dir_arr, x_y)
         if neighbor_is_invalid(n_dir):
-            return dist
-        dist += n_dist
+            return start_dist - dist
         x_y = neighbor_xy(x_y, n_dir)
 
 def result_lines_insert(result_lines, entry, start=0):
@@ -166,14 +165,15 @@ def trace_ridges(dem_band, valleys=False):
     progress_next = 0
     while tentative:
         x_y = tentative.pop()
-        #print('    Processing point %s alt %s'%(x_y, dem_band.get_elevation(seed_xy)))
-        end_of_line = True
+        dist = gdal_utils.read_arr(dir_arr['dist'], x_y)
+        #print('    Processing point %s alt %d, dist %d'%(x_y, dem_band.get_elevation(seed_xy), dist))
+        successors = 0
         for t_xy, n_dir in valid_neighbors(dem_band, x_y):
             if gdal_utils.read_arr(dir_arr['n_dir'], t_xy) == NEIGHBOR_PENDING:
-                end_of_line = False
+                successors += 1
                 # Keep the flipped neighbor direction to later track this back
                 n_dist = distance.get_distance(x_y, t_xy)
-                gdal_utils.write_arr(dir_arr, t_xy, (neighbor_flip(n_dir), n_dist))
+                gdal_utils.write_arr(dir_arr, t_xy, (neighbor_flip(n_dir), n_dist + dist))
                 alt = dem_band.get_elevation(t_xy)
                 assert not numpy.isnan(alt), '"NoDataValue" point %s is marked for processing'%t_xy
                 # Insert the point in 'tentative' by keeping it sorted by altitude
@@ -188,11 +188,10 @@ def trace_ridges(dem_band, valleys=False):
                 idx, _ = search_sorted(tentative, cmp_fn)
                 tentative.insert(idx, t_xy)
 
-        if end_of_line:
-            dist = measure_distance(dir_arr, x_y)
+        if successors == 0:
             #print('  Line finished at point %s total length %d'%(x_y, dist))
             # Keep this end-point in 'result_lines', but if it's at least one pixel
-            if gdal_utils.read_arr(dir_arr['n_dir'], x_y) != NEIGHBOR_SEED:
+            if dist > 0:
                 result_lines_insert(result_lines, (x_y, dist))
                 #
                 # Progress, each 1000-th line
@@ -210,7 +209,7 @@ def trace_ridges(dem_band, valleys=False):
                     # Restart at the highest/lowest unprocessed point
                     seed_xy = select_seed(dem_band.get_elevation(True), valleys, numpy.logical_not(mask))
                     print('Restart tracing from seed point', seed_xy, ', altitude', dem_band.get_elevation(seed_xy))
-                    gdal_utils.write_arr(dir_arr, seed_xy, NEIGHBOR_SEED)
+                    gdal_utils.write_arr(dir_arr, seed_xy, (NEIGHBOR_SEED, 0.))
                     tentative.append(seed_xy)
 
     return result_lines, dir_arr
@@ -234,7 +233,7 @@ def combine_lines(result_lines, dir_arr, min_len=0):
                 pline.append(x_y)
             else:
                 # Avoid fake ridges that touch the DEM's boundaries, by restarting the path
-                dist = measure_distance(dir_arr, x_y)
+                dist = reduced_distance(dir_arr, x_y)
                 pline = [x_y]
             n_dir = gdal_utils.read_arr(dir_arr['n_dir'], x_y)
             # Stop other lines from overlapping that one
@@ -248,7 +247,7 @@ def combine_lines(result_lines, dir_arr, min_len=0):
         idx = 0
         while idx < len(result_lines):
             x_y, old_dist = result_lines[idx]
-            dist = measure_distance(dir_arr, x_y)
+            dist = reduced_distance(dir_arr, x_y)
             if dist == old_dist:
                 #
                 # Progress (logarithmic), total ~10 messages
@@ -261,7 +260,7 @@ def combine_lines(result_lines, dir_arr, min_len=0):
                 assert dist < old_dist, 'Line distance was increased %d->%d'%(old_dist, dist)
                 # Move the entry to keep 'result_lines' sorted by distance
                 del result_lines[idx]
-                if dist > min_len:
+                if dist >= min_len:
                     #print('    Updating line at %d/%d, distance %d->%d'%(idx, len(result_lines), old_dist, dist))
                     result_lines_insert(result_lines, (x_y, dist), idx)
 
