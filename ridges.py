@@ -75,15 +75,29 @@ def neighbor_is_invalid(neighbor_dir):
     """Return mask of where the neighbor directions are invalid"""
     return neighbor_dir > NEIGHBOR_LAST_VALID
 
-def valid_neighbors(dem_band, x_y):
-    """Return list of valid neighbor points"""
-    n_xy = neighbor_xy(x_y[...,numpy.newaxis,:], VALID_NEIGHBOR_DIRS)
+def process_neighbors(dem_band, distance, dir_arr, x_y):
+    """Process the valid and pending neighbor points and return a list to be put to tentative"""
+    x_y = x_y[...,numpy.newaxis,:]
+    n_xy = neighbor_xy(x_y, VALID_NEIGHBOR_DIRS)
     n_dir = numpy.broadcast_to(VALID_NEIGHBOR_DIRS, n_xy.shape[:-1])
+    # Filter out of bounds pixels
     mask = dem_band.in_bounds(n_xy)
     if not mask.all():
         n_xy = n_xy[mask]
         n_dir = n_dir[mask]
-    return zip(n_xy, n_dir)
+    # Filter already processed pixels
+    mask = gdal_utils.read_arr(dir_arr['n_dir'], n_xy) == NEIGHBOR_PENDING
+    if not mask.any():
+        return ()
+    if not mask.all():
+        n_xy = n_xy[mask]
+        n_dir = n_dir[mask]
+    # Process selected pixels
+    gdal_utils.write_arr(dir_arr['n_dir'], n_xy, neighbor_flip(n_dir))
+    n_dist = distance.get_distance(numpy.broadcast_to(x_y, n_xy.shape), n_xy)
+    dist = gdal_utils.read_arr(dir_arr['dist'], x_y)
+    gdal_utils.write_arr(dir_arr['dist'], n_xy, n_dist + dist)
+    return n_xy
 
 def reduced_distance(dir_arr, x_y):
     """Calculate trace distance upto the next NEIGHBOR_STOP"""
@@ -165,30 +179,26 @@ def trace_ridges(dem_band, valleys=False):
     progress_next = 0
     while tentative:
         x_y = tentative.pop()
-        dist = gdal_utils.read_arr(dir_arr['dist'], x_y)
         #print('    Processing point %s alt %d, dist %d'%(x_y, dem_band.get_elevation(seed_xy), dist))
         successors = 0
-        for t_xy, n_dir in valid_neighbors(dem_band, x_y):
-            if gdal_utils.read_arr(dir_arr['n_dir'], t_xy) == NEIGHBOR_PENDING:
-                successors += 1
-                # Keep the flipped neighbor direction to later track this back
-                n_dist = distance.get_distance(x_y, t_xy)
-                gdal_utils.write_arr(dir_arr, t_xy, (neighbor_flip(n_dir), n_dist + dist))
-                alt = dem_band.get_elevation(t_xy)
-                assert not numpy.isnan(alt), '"NoDataValue" point %s is marked for processing'%t_xy
-                # Insert the point in 'tentative' by keeping it sorted by altitude
-                def cmp_fn(check_xy, *args):
-                    # The duplicated altitudes are placed at lowest possible index (<= or >=).
-                    # Thus, they are processed in order of appearance (FIFO).
-                    if valleys:
-                        # Descending sort FIFO-duplicate (>=)
-                        return -1 if alt >= dem_band.get_elevation(check_xy) else 1
-                    # Ascending sort FIFO-duplicate (<=)
-                    return -1 if alt <= dem_band.get_elevation(check_xy) else 1
-                idx, _ = search_sorted(tentative, cmp_fn)
-                tentative.insert(idx, t_xy)
+        for t_xy in process_neighbors(dem_band, distance, dir_arr, x_y):
+            successors += 1
+            alt = dem_band.get_elevation(t_xy)
+            assert not numpy.isnan(alt), '"NoDataValue" point %s is marked for processing'%t_xy
+            # Insert the point in 'tentative' by keeping it sorted by altitude
+            def cmp_fn(check_xy, *args):
+                # The duplicated altitudes are placed at lowest possible index (<= or >=).
+                # Thus, they are processed in order of appearance (FIFO).
+                if valleys:
+                    # Descending sort FIFO-duplicate (>=)
+                    return -1 if alt >= dem_band.get_elevation(check_xy) else 1
+                # Ascending sort FIFO-duplicate (<=)
+                return -1 if alt <= dem_band.get_elevation(check_xy) else 1
+            idx, _ = search_sorted(tentative, cmp_fn)
+            tentative.insert(idx, t_xy)
 
         if successors == 0:
+            dist = gdal_utils.read_arr(dir_arr['dist'], x_y)
             #print('  Line finished at point %s total length %d'%(x_y, dist))
             # Keep this end-point in 'result_lines', but if it's at least one pixel
             if dist > 0:
