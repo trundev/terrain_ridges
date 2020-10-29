@@ -156,7 +156,7 @@ def trace_ridges(dem_band, valleys=False):
     result_lines = []
 
     distance = gdal_utils.geod_distance(dem_band)
-    old_tentative_len = 1
+    progress_next = 0
     while tentative:
         x_y = tentative.pop()
         #print('    Processing point %s alt %s'%(x_y, dem_band.get_elevation(seed_xy)))
@@ -180,12 +180,6 @@ def trace_ridges(dem_band, valleys=False):
                     return -1 if alt <= dem_band.get_elevation(check_xy) else 1
                 idx, _ = search_sorted(tentative, cmp_fn)
                 tentative.insert(idx, t_xy)
-        #
-        # Progress
-        #
-        if abs(old_tentative_len - len(tentative)) / old_tentative_len > .5:
-            print('  Tentatives', len(tentative), 'completed', len(result_lines))
-            old_tentative_len = len(tentative)
 
         if end_of_line:
             dist = measure_distance(dir_arr, x_y)
@@ -193,6 +187,13 @@ def trace_ridges(dem_band, valleys=False):
             # Keep this end-point in 'result_lines', but if it's at least one pixel
             if gdal_utils.read_arr(dir_arr['n_dir'], x_y) != NEIGHBOR_SEED:
                 result_lines_insert(result_lines, (x_y, dist))
+                #
+                # Progress, each 1000-th line
+                #
+                if progress_next <= len(result_lines):
+                    print('  Tentatives', len(tentative), 'completed', len(result_lines),
+                            'max/mid/min len %d/%d/%d'%(result_lines[0][1], result_lines[len(result_lines)//2][1], result_lines[-1][1]))
+                    progress_next += 1000
 
             # After the 'tentative' is exhausted, there still can be islands of valid elevations,
             # that were not processed, because of the surrounding invalid ones
@@ -204,7 +205,6 @@ def trace_ridges(dem_band, valleys=False):
                     print('Restart tracing from seed point', seed_xy, ', altitude', dem_band.get_elevation(seed_xy))
                     gdal_utils.write_arr(dir_arr, seed_xy, NEIGHBOR_SEED)
                     tentative.append(seed_xy)
-                    old_tentative_len = 1
 
     return result_lines, dir_arr
 
@@ -237,18 +237,25 @@ def combine_lines(result_lines, dir_arr, min_len=0):
 
         # Update distances after some of the lines were cut
         print('  Update remaining %d lines: mid/min len %d/%d'%(len(result_lines), result_lines[len(result_lines)//2][1], result_lines[-1][1]))
+        progress_next = 1
         idx = 0
         while idx < len(result_lines):
             x_y, old_dist = result_lines[idx]
             dist = measure_distance(dir_arr, x_y)
             if dist == old_dist:
+                #
+                # Progress (logarithmic), total ~10 messages
+                #
+                if progress_next <= 1 + idx / len(result_lines):
+                    print('    Updated line at %d/%d: len %d'%(idx, len(result_lines), result_lines[idx][1]))
+                    progress_next *= 1.07   # 2^(1/10)
                 idx += 1
             else:
                 assert dist < old_dist, 'Line distance was increased %d->%d'%(old_dist, dist)
                 # Move the entry to keep 'result_lines' sorted by distance
                 del result_lines[idx]
                 if dist > min_len:
-                    print('    Updating line at %d/%d, distance %d->%d'%(idx, len(result_lines), old_dist, dist))
+                    #print('    Updating line at %d/%d, distance %d->%d'%(idx, len(result_lines), old_dist, dist))
                     result_lines_insert(result_lines, (x_y, dist), idx)
 
     return polylines
