@@ -20,6 +20,11 @@ VALID_NEIGHBOR_DIRS = numpy.array(VALID_NEIGHBOR_DIRS, dtype=NEIGHBOR_DIR_DTYPE)
 
 # Keep the seed away from the edges
 SEED_INFLATE = 1
+# Select distance caclulation method:
+#   0 - Real geodetic distance (geod_distance): Use pyproj.Geod.inv()
+#   1 - Transverse Mercator (tm_distance): Use TM origin at the center of raster data
+#   2 - Draft (draft_distance): Use pre-calculated pixel size by tm_distance for all pixels
+DISTANCE_METHOD = 0
 
 def VECTOR_LAYER_NAME(valleys): return 'valleys' if valleys else 'ridges'
 def VECTOR_FEATURE_STYLE(valleys): return 'PEN(c:#0000FF,w:2px)' if valleys else 'PEN(c:#FF0000,w:2px)'
@@ -155,7 +160,9 @@ def trace_ridges(dem_band, valleys=False):
     #
     result_lines = []
 
-    distance = gdal_utils.geod_distance(dem_band)
+    distance = gdal_utils.geod_distance(dem_band) if 0 == DISTANCE_METHOD \
+            else gdal_utils.tm_distance(dem_band) if 1 == DISTANCE_METHOD \
+            else gdal_utils.draft_distance(dem_band)
     progress_next = 0
     while tentative:
         x_y = tentative.pop()

@@ -5,7 +5,10 @@ import numpy
 import gdal
 import ogr
 import osr
-import pyproj
+try:
+    import pyproj
+except ImportError as ex:
+    print('Warning:', ex, '- geod_distance is unavailable', file=sys.stderr)
 
 
 #
@@ -177,9 +180,32 @@ class gdal_dem_band(gdal_dataset):
         return numpy.concatenate((lon_lat, alt), axis=-1)
 
 #
+# Coordinate transformation
+#
+class tm_transform:
+    """Convert to Transverse Mercator projection"""
+    def __init__(self, dem_band):
+        self.dem_band = dem_band
+        self.tm_xform = None
+
+    def build_xform(self, x_y, scale=1, false_easting=0, false_northing=0):
+        """Create transformation to Transverse Mercator centered at a raster pixel"""
+        del self.tm_xform
+        tm_srs = self.dem_band.get_spatial_ref()
+        lonlat = self.dem_band.xy2lonlat(x_y)
+        # Swap lon/lat to lat/lon, see SetTM()
+        tm_srs.SetTM(*lonlat[-1::-1], scale, false_easting, false_northing)
+        self.tm_xform = self.dem_band.build_srs_xform(tm_srs)
+
+    def xy2tm(self, x_y):
+        """Convert raster (x,y) to the selected Transverse Mercator"""
+        return self.dem_band.coord_xform(self.tm_xform, self.dem_band.xy2coords(x_y))
+
+#
 # Distance calculator
 #
 class geod_distance:
+    """Distance calculation by using pyproj.Geod.inv()"""
     def __init__(self, gdal_dem_band):
         self.dem_band = gdal_dem_band
         srs = gdal_dem_band.get_spatial_ref()
@@ -201,6 +227,55 @@ class geod_distance:
         dist = dist.T
         # Adjust distance with the altitude displacement
         return numpy.sqrt(dist*dist + disp*disp)
+
+class tm_distance(tm_transform):
+    """Distance calculation by difference between Transverse Mercator coordinates"""
+    def __init__(self, dem_band):
+        super(tm_distance, self).__init__(dem_band)
+        # Transformation to Transverse Mercator with origin at the center of data
+        x_y = numpy.array(dem_band.get_elevation(True).shape) // 2
+        self.build_xform(x_y)
+
+    def get_distance(self, xy0, xy1, flat=False):
+        """Calculate distance between two points by transforming to TM"""
+        xy01 = numpy.stack((xy0, xy1))
+        vect = self.xy2tm(xy01)
+        vect = vect[1] - vect[0]
+        if not flat:
+            # Get elevation displacements
+            alts = self.dem_band.get_elevation(xy01)
+            disp = (alts[1] - alts[0])[...,numpy.newaxis]
+            # Combine to the horizontal displacements
+            vect = numpy.concatenate((vect, disp), axis=-1)
+        # Return the combined vector lengths
+        return numpy.sqrt((vect * vect).sum(-1))
+
+    def get_pixel_size(self, x_y):
+        """Calculate pixel size in TM"""
+        x_y = numpy.broadcast_to(x_y[...,numpy.newaxis,:], [*x_y.shape, 2])
+        # Get coordinates of (+1,0) and (0,+1)
+        xy1 = x_y + numpy.identity(2, dtype=x_y.dtype)
+        return tm_distance.get_distance(self, x_y, xy1, True)
+
+class draft_distance(tm_distance):
+    """Fast (inaccurate) distance calculation"""
+    def __init__(self, dem_band):
+        super(draft_distance, self).__init__(dem_band)
+        # Precalculate size of the pixel at the center of data
+        x_y = numpy.array(dem_band.get_elevation(True).shape) // 2
+        self.pixel_size = self.get_pixel_size(x_y)
+        print('Precalculated pixel size at', x_y, ':', self.pixel_size)
+
+    def get_distance(self, xy0, xy1):
+        """Calculate distance between two points by using pre-calculated 'pixel_size'"""
+        # Get elevation displacements
+        alts = self.dem_band.get_elevation(numpy.stack((xy0, xy1), axis=-2))
+        disp = (alts[...,1] - alts[...,0])[...,numpy.newaxis]
+        # Combine to the horizontal displacements
+        vect = (xy1 - xy0) * self.pixel_size
+        vect = numpy.concatenate((vect, disp), axis=-1)
+        # Return the combined vector lengths
+        return numpy.sqrt((vect * vect).sum(-1))
 
 def dem_open(filename, band=1):
     """Open a raster DEM file for reading"""
