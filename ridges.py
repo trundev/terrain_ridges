@@ -48,6 +48,8 @@ def search_sorted(array, cmp_fn, *args):
 #
 def neighbor_xy(x_y, neighbor_dir):
     """Get the coordinates of a neighbor pixel"""
+    if neighbor_dir.ndim < 2:       # Performance optimization
+        return (x_y.T + (neighbor_dir % 3 - 1, neighbor_dir // 3 - 1)).T
     return x_y + numpy.stack((neighbor_dir % 3 - 1, neighbor_dir // 3 - 1), -1)
 
 def neighbor_flip(neighbor_dir):
