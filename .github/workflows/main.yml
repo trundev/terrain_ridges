@@ -1,0 +1,170 @@
+name: Validate ridge generator
+
+on:
+  workflow_dispatch:
+    inputs:
+      SRC_URL:
+        description: "URL to download source DEM"
+        required: true
+        default: ""
+      DST_EXT:
+        description: "Destination file extension/format"
+        required: false
+        default: ".kmz"
+      TOOL_OPTIONS:
+        description: "Extra tool options"
+        required: false
+        default: ""
+      GDALWARP_OPTIONS:
+        description: "Modify the source via gdalwarp, before main process"
+        required: false
+        default: ""
+  push:
+    branches: [ master ]
+
+env:
+  SRC_URL: "${{ github.event.inputs.SRC_URL }}"
+  DST_EXT: "${{ github.event.inputs.DST_EXT }}"
+  TOOL_OPTIONS: "${{ github.event.inputs.TOOL_OPTIONS }}"
+  GDALWARP_OPTIONS: "${{ github.event.inputs.GDALWARP_OPTIONS }}"
+  DEF_SRC_URL: "https://dds.cr.usgs.gov/srtm/version2_1/SRTM3/Eurasia/N39E021.hgt.zip"
+  DEF_DST_EXT: ".kml"
+  DEF_GDALWARP_OPTIONS: "-te 21.5 39.5 22.0 39.0" # SE quarter of N39E021.hgt (600x600)
+  # Will add ".zip",  "-libs.zip" and "-src.zip"
+  GDAL_URL_PREFIX: "http://download.gisinternals.com/sdk/downloads/release-1911-x64-gdal-3-1-3-mapserver-7-6-1"
+
+jobs:
+  generate:
+    runs-on: windows-latest
+
+    env:
+      SRC_DEM_DIR: "DEM"
+      MOD_SRC_POSTFIX: "-mod.tif"
+      REF_RESULT_DIR: "ref_results"
+
+    steps:
+    - name: Default source DEM (on push event)
+      if: env.SRC_URL == ''
+      run: |
+        echo "SRC_URL=${{ env.DEF_SRC_URL }}" >> ${env:GITHUB_ENV}
+        echo "DST_EXT=${{ env.DEF_DST_EXT }}" >> ${env:GITHUB_ENV}
+        echo "GDALWARP_OPTIONS=${{ env.DEF_GDALWARP_OPTIONS }}" >> ${env:GITHUB_ENV}
+
+    - uses: actions/checkout@v2
+
+    # GDAL and Python 3.8 problem:
+    # With USE_PATH_FOR_GDAL_PYTHON and python 3.8, "osgeo\__init__.py" pass all directories
+    # from PATH to os.add_dll_directory(), which fails if any of them is missing.
+    - name: Set up Python 3.7
+      uses: actions/setup-python@v2
+      with:
+        python-version: 3.7
+
+    - name: Prepare for GDAL installation
+      run: |
+        echo "Downloading GDAL from ${{ env.GDAL_URL_PREFIX }}..."
+        ForEach ($postfix in ".zip", "-libs.zip", "-src.zip") {
+          $SRC_URI = [uri]("${{ env.GDAL_URL_PREFIX }}" + $postfix)
+          $SRC_ZIP = $SRC_URI.Segments[-1]
+          Invoke-WebRequest -H @{Accept='application/octet-stream'} $SRC_URI -o $SRC_ZIP
+          if ($proc.ExitCode) {exit $proc.ExitCode}
+          Expand-Archive $SRC_ZIP -DestinationPath GDAL
+          if ($proc.ExitCode) {exit $proc.ExitCode}
+        }
+        $GDAL_BASE=Get-Item("GDAL")
+
+        $INCLUDE="$GDAL_BASE/include;$GDAL_BASE/gdal/gcore;$GDAL_BASE/gdal/port;$GDAL_BASE/gdal/gnm"
+        echo "INCLUDE=$INCLUDE" >> ${env:GITHUB_ENV}
+        echo "INCLUDE set to $INCLUDE"
+
+        $LIB="$GDAL_BASE/lib"
+        echo "LIB=$LIB" >> ${env:GITHUB_ENV}
+        echo "LIB set to $LIB"
+
+        $GDAL_DRIVER_PATH="$GDAL_BASE/bin/gdal/plugins"
+        echo "GDAL_DRIVER_PATH=$GDAL_DRIVER_PATH" >> ${env:GITHUB_ENV}
+        echo "GDAL_DRIVER_PATH set to $GDAL_DRIVER_PATH"
+
+        $PROJ_LIB="$GDAL_BASE/bin/proj6/share"
+        echo "PROJ_LIB=$PROJ_LIB" >> ${env:GITHUB_ENV}
+        echo "PROJ_LIB set to $PROJ_LIB"
+
+        echo "$GDAL_BASE/bin" >> ${env:GITHUB_PATH}
+        echo "Path added: $GDAL_BASE/bin"
+
+        echo "USE_PATH_FOR_GDAL_PYTHON=YES" >> ${env:GITHUB_ENV}
+        echo "USE_PATH_FOR_GDAL_PYTHON set to YES"
+
+        # Confusing ERROR messages workaround:
+        # Delete plugin DLLs that can't be loaded
+        del $GDAL_DRIVER_PATH/gdal_GEOR.dll
+        del $GDAL_DRIVER_PATH/ogr_OCI.dll
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install numpy gdal pyproj
+        if (Test-Path requirements.txt) { pip install -r requirements.txt }
+
+    - name: Download source DEM
+      run: |
+        ForEach ($url in "${{ env.SRC_URL }}".Split(",")) {
+          echo "Downloading DEM from $url..."
+          $SRC_URI = [uri]"$url"
+          $SRC_ZIP = $SRC_URI.Segments[-1]
+          Invoke-WebRequest -H @{Accept='application/octet-stream'} $SRC_URI -o $SRC_ZIP
+          if ($proc.ExitCode) {exit $proc.ExitCode}
+          echo "Unzipping $SRC_ZIP..."
+          Expand-Archive $SRC_ZIP -DestinationPath ${{ env.SRC_DEM_DIR }}
+          if ($proc.ExitCode) {exit $proc.ExitCode}
+        }
+
+        #TODO: Select the correct DEM-file, instead of the first extracted file
+        $SRC_DEM = $(Get-ChildItem ${{ env.SRC_DEM_DIR }})[0]
+        echo "SRC_DEM=$SRC_DEM" >> ${env:GITHUB_ENV}
+        echo "SRC_DEM set to $SRC_DEM"
+
+        $DST_NAME = $SRC_DEM.Name + "${{ env.DST_EXT }}"
+        echo "DST_NAME=$DST_NAME" >> ${env:GITHUB_ENV}
+        echo "DST_NAME set to $DST_NAME"
+
+    - name: Modify/crop source DEM
+      if: env.GDALWARP_OPTIONS
+      run: |
+        $MOD_SRC = Get-Item ${{ env.SRC_DEM }}
+        $MOD_SRC = Join-path $MOD_SRC.Directory ($MOD_SRC.BaseName + "${{ env.MOD_SRC_POSTFIX }}")
+        echo "gdalwarp ${{ env.GDALWARP_OPTIONS }} ${{ env.SRC_DEM }} $MOD_SRC"
+        ${{ env.GDAL_DRIVER_PATH }}/../apps/gdalwarp ${{ env.GDALWARP_OPTIONS }} ${{ env.SRC_DEM }} $MOD_SRC
+        if ($proc.ExitCode) {exit $proc.ExitCode}
+
+        $MOD_SRC = Get-Item $MOD_SRC
+        echo "SRC_DEM=$MOD_SRC" >> ${env:GITHUB_ENV}
+        echo "SRC_DEM changed to $MOD_SRC"
+
+        $DST_NAME = $MOD_SRC.Name + "${{ env.DST_EXT }}"
+        echo "DST_NAME=$DST_NAME" >> ${env:GITHUB_ENV}
+        echo "DST_NAME set to $DST_NAME"
+
+    - name: Source DEM info
+      run: ${{ env.GDAL_DRIVER_PATH }}/../apps/gdalinfo ${{ env.SRC_DEM }}
+
+    - name: Generate ridges
+      run: python ridges.py ${{ env.TOOL_OPTIONS }} ${{ env.SRC_DEM }} ${{ env.DST_NAME }}
+
+    - uses: actions/upload-artifact@v2
+      with:
+        name: ${{ env.DST_NAME }}
+        path: |
+          ${{ env.DST_NAME }}
+          ${{ env.SRC_DEM_DIR }}/*.npy
+
+    - name: Validate result
+      run: |
+        $REF_NAME = Join-path ${{ env.REF_RESULT_DIR }} ${{ env.DST_NAME }}
+        if ( ! $(Test-Path $REF_NAME)) {
+          echo "Missing $REF_NAME, validation skipped"
+          exit 0
+        }
+
+        echo "Comparing ${{ env.DST_NAME }} to $REF_NAME..."
+        git diff ${{ env.DST_NAME }} $REF_NAME
