@@ -220,7 +220,13 @@ def combine_lines(result_lines, dir_arr, min_len=0):
         pline = []
         # Trace route
         while x_y is not None:
-            pline.append(x_y)
+            # Add the point to the path, but only if it is an inner one
+            if (x_y > 0).all(-1) and (dir_arr.shape - x_y > 1).all(-1):
+                pline.append(x_y)
+            else:
+                # Avoid fake ridges that touch the DEM's boundaries, by restarting the path
+                dist = measure_distance(dir_arr, x_y)
+                pline = [x_y]
             n_dir = gdal_utils.read_arr(dir_arr['n_dir'], x_y)
             # Stop other lines from overlapping that one
             gdal_utils.write_arr(dir_arr['n_dir'], x_y, NEIGHBOR_STOP)
@@ -328,7 +334,7 @@ def main(argv):
             geom = dst_layer.create_feature_geometry(gdal_utils.wkbLineString)
             geom.set_field('Name', '%dm'%dist if dist < 10000 else '%dkm'%round(dist/1000))
             geom.set_style_string(VECTOR_FEATURE_STYLE(valleys))
-            for x_y in pline:
+            for x_y in reversed(pline):
                 geom.add_point(*dem_band.xy2lonlatalt(x_y))
             geom.create()
         duration = time.time() - start
