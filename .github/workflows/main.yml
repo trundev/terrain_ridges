@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       SRC_URL:
-        description: "URL to download source DEM"
+        description: "URL(s) to download source DEM (comma separated)"
         required: true
         default: ""
       DST_EXT:
@@ -12,11 +12,11 @@ on:
         required: false
         default: ".kmz"
       TOOL_OPTIONS:
-        description: "Extra tool options"
+        description: "Extra tool options (like -valley)"
         required: false
         default: ""
       GDALWARP_OPTIONS:
-        description: "Modify the source via gdalwarp, before main process"
+        description: "Modify the source via gdalwarp, like (-ts <w> <h>, -te <xmin> <ymin> <xmax> <ymax>)"
         required: false
         default: ""
   push:
@@ -40,7 +40,10 @@ jobs:
     env:
       SRC_DEM_DIR: "DEM"
       MOD_SRC_POSTFIX: "-mod.tif"
+      MERGE_SRC_POSTFIX: "-merge.tif"
+      MERGE_OPTIONS: "-a_nodata -32768"
       REF_RESULT_DIR: "ref_results"
+      DEM_EXTENSIONS: '".dem",".hgt",".tif",".tiff"'
 
     steps:
     - name: Default source DEM (on push event)
@@ -128,10 +131,28 @@ jobs:
           if ($proc.ExitCode) {exit $proc.ExitCode}
         }
 
-        #TODO: Select the correct DEM-file, instead of the first extracted file
-        $SRC_DEM = $(Get-ChildItem ${{ env.SRC_DEM_DIR }})[0]
+        $SRC_DEM = @(Get-ChildItem ${{ env.SRC_DEM_DIR }})
+        # Select just the DEM-files, if multiple files were extracted
+        if ($SRC_DEM.Length -gt 1) {
+          $SRC_DEM = @($SRC_DEM | Where-Object {$_.Extension -in ${{ env.DEM_EXTENSIONS }} })
+          $SRC_DEM = $SRC_DEM -join ", "
+        }
         echo "SRC_DEM=$SRC_DEM" >> ${env:GITHUB_ENV}
         echo "SRC_DEM set to $SRC_DEM"
+
+    - name: Merge source DEMs (if mutiple)
+      if: contains( env.SRC_DEM, ', ')
+      run: |
+        $SRC_DEM = "${{ env.SRC_DEM }}".Split(",").Trim()
+        $MOD_SRC = Get-Item $SRC_DEM[0]
+        $MOD_SRC = Join-path $MOD_SRC.Directory ($MOD_SRC.BaseName + "${{ env.MERGE_SRC_POSTFIX }}")
+        echo "gdal_merge.py ${{ env.MERGE_OPTIONS }} $SRC_DEM -o $MOD_SRC"
+        python $(where.exe gdal_merge.py) ${{ env.MERGE_OPTIONS }} $SRC_DEM -o $MOD_SRC
+        if ($LASTEXITCODE) {exit $LASTEXITCODE}
+
+        $MOD_SRC = Get-Item $MOD_SRC
+        echo "SRC_DEM=$MOD_SRC" >> ${env:GITHUB_ENV}
+        echo "SRC_DEM changed to $MOD_SRC"
 
     - name: Modify/crop source DEM
       if: env.GDALWARP_OPTIONS
