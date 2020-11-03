@@ -103,8 +103,17 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install numpy gdal pyproj
-        if (Test-Path requirements.txt) { pip install -r requirements.txt }
+        if (Test-Path requirements.txt) {
+          pip install -r requirements.txt
+          if ($LASTEXITCODE) {exit $LASTEXITCODE}
+
+          echo "***"
+          echo "Workaround for missing osgeo.gdal_array wrapper (.pyd)"
+          pip uninstall -y gdal
+          pip install -r requirements.txt
+        } else {
+          pip install numpy gdal pyproj
+        }
 
     - name: Download source DEM
       run: |
@@ -124,10 +133,6 @@ jobs:
         echo "SRC_DEM=$SRC_DEM" >> ${env:GITHUB_ENV}
         echo "SRC_DEM set to $SRC_DEM"
 
-        $DST_NAME = $SRC_DEM.Name + "${{ env.DST_EXT }}"
-        echo "DST_NAME=$DST_NAME" >> ${env:GITHUB_ENV}
-        echo "DST_NAME set to $DST_NAME"
-
     - name: Modify/crop source DEM
       if: env.GDALWARP_OPTIONS
       run: |
@@ -135,18 +140,20 @@ jobs:
         $MOD_SRC = Join-path $MOD_SRC.Directory ($MOD_SRC.BaseName + "${{ env.MOD_SRC_POSTFIX }}")
         echo "gdalwarp ${{ env.GDALWARP_OPTIONS }} ${{ env.SRC_DEM }} $MOD_SRC"
         ${{ env.GDAL_DRIVER_PATH }}/../apps/gdalwarp ${{ env.GDALWARP_OPTIONS }} ${{ env.SRC_DEM }} $MOD_SRC
-        if ($proc.ExitCode) {exit $proc.ExitCode}
+        if ($LASTEXITCODE) {exit $LASTEXITCODE}
 
         $MOD_SRC = Get-Item $MOD_SRC
         echo "SRC_DEM=$MOD_SRC" >> ${env:GITHUB_ENV}
         echo "SRC_DEM changed to $MOD_SRC"
 
-        $DST_NAME = $MOD_SRC.Name + "${{ env.DST_EXT }}"
+    - name: Select DST_NAME, get source DEM info
+      run: |
+        $SRC_DEM = Get-Item ${{ env.SRC_DEM }}
+        $DST_NAME = $SRC_DEM.Name + "${{ env.DST_EXT }}"
         echo "DST_NAME=$DST_NAME" >> ${env:GITHUB_ENV}
         echo "DST_NAME set to $DST_NAME"
 
-    - name: Source DEM info
-      run: ${{ env.GDAL_DRIVER_PATH }}/../apps/gdalinfo ${{ env.SRC_DEM }}
+        ${{ env.GDAL_DRIVER_PATH }}/../apps/gdalinfo ${{ env.SRC_DEM }}
 
     - name: Generate ridges
       run: python ridges.py ${{ env.TOOL_OPTIONS }} ${{ env.SRC_DEM }} ${{ env.DST_NAME }}
