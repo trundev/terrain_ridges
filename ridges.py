@@ -232,6 +232,105 @@ def trace_ridges(dem_band, valleys=False):
 
     return result_lines, dir_arr
 
+def flip_line(new_dir_arr, dir_arr, x_y):
+    """Flip all 'n_dir'-s along a line, invert the distances"""
+    prev_dir, start_dist = gdal_utils.read_arr(dir_arr, x_y)
+    print('Flipping line at', x_y, ', distance %d'%start_dist)
+
+    gdal_utils.write_arr(new_dir_arr, x_y, (NEIGHBOR_SEED, 0.))
+    while True:
+        n_xy = neighbor_xy(x_y, prev_dir)
+        n_dir, dist = gdal_utils.read_arr(dir_arr, n_xy)
+        gdal_utils.write_arr(new_dir_arr, n_xy, (neighbor_flip(prev_dir), start_dist - dist))
+        if neighbor_is_invalid(n_dir):
+            assert n_dir == NEIGHBOR_SEED
+            print('  Remove former seed at', n_xy)
+            return n_xy
+
+        x_y = n_xy
+        prev_dir = n_dir
+
+def flip_seed_lines(dir_arr, result_lines):
+    """Create a new 'dir_arr', where all the first lines ending to any of "seed"-s are flipped"""
+    new_dir_arr = numpy.empty_like(dir_arr)
+    new_dir_arr['n_dir'] = NEIGHBOR_PENDING
+    # Copy "invalid" markers
+    mask = dir_arr['n_dir'] == NEIGHBOR_INVALID
+    new_dir_arr['n_dir'][mask] = NEIGHBOR_INVALID
+    new_dir_arr['dist'] = numpy.nan
+
+    # Rescan and copy all lines:
+    # - The ones ending in a 'seed' are flipped, thus the NEIGHBOR_SEED marker is replaced with
+    #   a valid direction. This effectively changes the final part the other overlapping lines.
+    #   Moreover, the ones that ended formerly in that 'seed' are extended to completely overlap
+    #   the flipped one.
+    # - The 'dist' members along the others are adjusted to reflect the change in that overlapping
+    #   section.
+    new_result_lines = []
+    progress_next = 0
+    for start_xy, _ in result_lines:
+        # Scan the line upto already updated point, 'seed' or 'stop' markers
+        x_y = start_xy
+        n_dir, start_dist = gdal_utils.read_arr(dir_arr, x_y)
+        dist = start_dist
+        while True:
+            new_dir, new_dist = gdal_utils.read_arr(new_dir_arr, x_y)
+            if new_dir != NEIGHBOR_PENDING:
+                # An already updated point is reached, adjust by using the new distance
+                adj_dist = new_dist - dist
+                break
+            if neighbor_is_invalid(n_dir):
+                if n_dir == NEIGHBOR_SEED:
+                    # A seed is reached, flip the line
+                    adj_dist = None
+                else:
+                    # A stop-marker is reached, just copy the line
+                    assert n_dir == NEIGHBOR_STOP
+                    adj_dist = 0
+                break
+
+            x_y = neighbor_xy(x_y, n_dir)
+            n_dir, dist = gdal_utils.read_arr(dir_arr, x_y)
+
+        # Process the scanned line-segment
+        if adj_dist is None:
+            # This reached 'seed' - flip it, later others will merge to it
+            start_xy = flip_line(new_dir_arr, dir_arr, start_xy)
+            # Note:
+            # The result_lines_insert() is called to handle the case when this is the only line
+            # ending in that 'seed' (quite rare case). In other cases, at the next stage it will
+            # be discarded: reduced_distance() will cut it zero, as it is completelly ovelapped.
+        else:
+            # This reached an already updated point - adjust all distances
+            start_dist += adj_dist
+            x_y = start_xy
+            while True:
+                new_dir, _ = gdal_utils.read_arr(new_dir_arr, x_y)
+                if new_dir != NEIGHBOR_PENDING:
+                    # Adjustment complete
+                    break
+
+                n_dir, dist = gdal_utils.read_arr(dir_arr, x_y)
+                gdal_utils.write_arr(new_dir_arr, x_y, (n_dir, dist + adj_dist))
+                if n_dir == NEIGHBOR_STOP:
+                    # Copy complete
+                    break
+                assert not neighbor_is_invalid(n_dir)
+                x_y = neighbor_xy(x_y, n_dir)
+
+        #assert start_dist == reduced_distance(new_dir_arr, start_xy)
+        result_lines_insert(new_result_lines, (start_xy, start_dist))
+
+        #
+        # Progress, total ~10 messages
+        #
+        if progress_next < len(new_result_lines):
+            print('  Adjusted', len(new_result_lines), 'lines, max/mid/min len %d/%d/%d'%(
+                    new_result_lines[0][1], new_result_lines[len(new_result_lines)//2][1], new_result_lines[-1][1]))
+            progress_next += len(result_lines) // 10
+
+    return new_dir_arr, new_result_lines
+
 def combine_lines(result_lines, dir_arr, min_len=0):
     """Create polylines from previously generated ridges or valleys"""
     polylines = []
@@ -329,11 +428,25 @@ def main(argv):
     print('Traced total %d lines, max length %d, %d sec'%(len(result_lines), result_lines[0][1], duration))
 
     #
-    # Combine traced lines, longer than quarter of the longest one
+    # Flip the longest lines ending in each 'seed' and recalculate the 'dist' members
+    # The seeds become the former last point of these lines
     #
     start = time.time()
 
-    polylines = combine_lines(result_lines, dir_arr, result_lines[0][1] / 4)
+    dir_arr, result_lines = flip_seed_lines(dir_arr, result_lines)
+    if dir_arr is None:
+        print('Error: Failed to flip longest lines', file=sys.stderr)
+        return 2
+
+    duration = time.time() - start
+    print('Flip & merge longest lines, %d sec'%(duration))
+
+    #
+    # Combine traced lines, longer than one-tenth of the longest one
+    #
+    start = time.time()
+
+    polylines = combine_lines(result_lines, dir_arr, result_lines[0][1] / 10)
     if not polylines:
         print('Error: Failed to combine lines', file=sys.stderr)
         return 2
