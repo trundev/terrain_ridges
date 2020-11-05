@@ -75,7 +75,7 @@ def neighbor_is_invalid(neighbor_dir):
     """Return mask of where the neighbor directions are invalid"""
     return neighbor_dir > NEIGHBOR_LAST_VALID
 
-def process_neighbors(dem_band, distance, dir_arr, x_y):
+def process_neighbors(dem_band, distance, dir_arr, x_y, stop_mask):
     """Process the valid and pending neighbor points and return a list to be put to tentative"""
     x_y = x_y[...,numpy.newaxis,:]
     n_xy = neighbor_xy(x_y, VALID_NEIGHBOR_DIRS)
@@ -93,10 +93,16 @@ def process_neighbors(dem_band, distance, dir_arr, x_y):
         n_xy = n_xy[mask]
         n_dir = n_dir[mask]
     # Process selected pixels
-    gdal_utils.write_arr(dir_arr['n_dir'], n_xy, neighbor_flip(n_dir))
+    n_dir = neighbor_flip(n_dir)
     n_dist = distance.get_distance(numpy.broadcast_to(x_y, n_xy.shape), n_xy)
-    dist = gdal_utils.read_arr(dir_arr['dist'], x_y)
-    gdal_utils.write_arr(dir_arr['dist'], n_xy, n_dist + dist)
+    n_dist += gdal_utils.read_arr(dir_arr['dist'], x_y)
+    # Put 'stop' markers on the successors of the masked points
+    # This is to split lines at the boundary pixels
+    if stop_mask.any():
+        n_dir[stop_mask] = NEIGHBOR_STOP
+        n_dist[stop_mask] = 0.
+    gdal_utils.write_arr(dir_arr['n_dir'], n_xy, n_dir)
+    gdal_utils.write_arr(dir_arr['dist'], n_xy, n_dist)
     return n_xy
 
 def reduced_distance(dir_arr, x_y):
@@ -180,8 +186,10 @@ def trace_ridges(dem_band, valleys=False):
     while tentative:
         x_y = tentative.pop()
         #print('    Processing point %s alt %d, dist %d'%(x_y, dem_band.get_elevation(seed_xy), dist))
+        # The lines can only pass-thru inner DEM pixels, the boundary ones do split
+        stop_mask = numpy.logical_or((x_y < 1).any(-1), (dir_arr.shape - x_y <= 1).any(-1))
         successors = 0
-        for t_xy in process_neighbors(dem_band, distance, dir_arr, x_y):
+        for t_xy in process_neighbors(dem_band, distance, dir_arr, x_y, stop_mask):
             successors += 1
             alt = dem_band.get_elevation(t_xy)
             assert not numpy.isnan(alt), '"NoDataValue" point %s is marked for processing'%t_xy
@@ -197,7 +205,7 @@ def trace_ridges(dem_band, valleys=False):
             idx, _ = search_sorted(tentative, cmp_fn)
             tentative.insert(idx, t_xy)
 
-        if successors == 0:
+        if successors == 0 or stop_mask.any():
             dist = gdal_utils.read_arr(dir_arr['dist'], x_y)
             #print('  Line finished at point %s total length %d'%(x_y, dist))
             # Keep this end-point in 'result_lines', but if it's at least one pixel
@@ -238,13 +246,7 @@ def combine_lines(result_lines, dir_arr, min_len=0):
         pline = []
         # Trace route
         while x_y is not None:
-            # Add the point to the path, but only if it is an inner one
-            if (x_y > 0).all(-1) and (dir_arr.shape - x_y > 1).all(-1):
-                pline.append(x_y)
-            else:
-                # Avoid fake ridges that touch the DEM's boundaries, by restarting the path
-                dist = reduced_distance(dir_arr, x_y)
-                pline = [x_y]
+            pline.append(x_y)
             n_dir = gdal_utils.read_arr(dir_arr['n_dir'], x_y)
             # Stop other lines from overlapping that one
             gdal_utils.write_arr(dir_arr['n_dir'], x_y, NEIGHBOR_STOP)
