@@ -340,10 +340,29 @@ def flip_seed_lines(dir_arr, dist_arr):
 def reduced_distance(dir_arr, x_y):
     """Calculate trace distance upto the next NEIGHBOR_STOP"""
     start_dist = gdal_utils.read_arr(dir_arr['dist'], x_y)
+    result = numpy.full_like(start_dist, numpy.nan)
+    pend_mask = numpy.isnan(result)
+    res_mask = numpy.empty_like(pend_mask)
     while True:
-        n_dir, dist = gdal_utils.read_arr(dir_arr, x_y)
-        if neighbor_is_invalid(n_dir):
-            return start_dist - dist
+        n_dir = gdal_utils.read_arr(dir_arr['n_dir'], x_y)
+        done_mask = neighbor_is_invalid(n_dir)
+        if done_mask.any():
+            # Some lines are traced to their ends, keep their distances in 'result'
+            dist = gdal_utils.read_arr(dir_arr['dist'], x_y[done_mask])
+            res_mask.fill(False)
+            res_mask[pend_mask] = done_mask
+            # The 'res_mask' now contains the 'done_mask', but spread to the initial locations
+            result[res_mask] = start_dist[res_mask] - dist
+
+            # Drop completed lines, proceed with the rest
+            done_mask = numpy.logical_not(done_mask)
+            pend_mask[pend_mask] = done_mask
+            x_y = x_y[done_mask]
+            n_dir = n_dir[done_mask]
+            if not pend_mask.any():
+                assert not numpy.isnan(result).any(), \
+                        'Failed to calculate distance at: %s'%(numpy.nonzero(numpy.isnan(result)))
+                return result
         x_y = neighbor_xy(x_y, n_dir)
 
 def combine_lines(result_lines, dir_arr, min_len=0):
@@ -380,29 +399,27 @@ def combine_lines(result_lines, dir_arr, min_len=0):
             break
 
         # Update distances after some of the lines were cut
-        print('  Update remaining %d lines: mid/min len %d/%d'%(result_lines.shape[0], result_lines[result_lines.shape[0] // 2]['dist'], result_lines[0]['dist']))
-        progress_next = 1
-        idx = result_lines.shape[0] - 1
-        while idx >= 0:
-            rline = result_lines[idx]
-            dist = reduced_distance(dir_arr, rline['x_y'])
-            if dist == rline['dist']:
-                #
-                # Progress (logarithmic), total ~10 messages
-                #
-                if progress_next <= 1 + idx / result_lines.shape[0]:
-                    print('    Updated line at %d/%d: len %d'%(idx, result_lines.shape[0], result_lines[idx]['dist']))
-                    progress_next *= 1.07   # 2^(1/10)
-            else:
-                assert dist < rline['dist'], 'Line distance was increased %d->%d'%(rline['dist'], dist)
-                # Move the entry to keep 'result_lines' sorted by distance
-                result_lines = numpy.delete(result_lines, idx)
-                if dist >= min_len:
-                    #print('    Updating line at %d/%d, distance %d->%d'%(idx, result_lines.shape[0], rline['dist'], dist))
-                    rline['dist'] = dist
-                    result_lines = sorted_arr_insert(result_lines, rline, 'dist', idx)
-                    idx += 1    # Hold the next decrement
-            idx -= 1
+        print('  Update remaining %d lines: mid/min len %d/%d'%(
+                result_lines.shape[0], result_lines[result_lines.shape[0] // 2]['dist'], result_lines[0]['dist']))
+        # Run distance reducing in parallel
+        new_dist = reduced_distance(dir_arr, result_lines['x_y'])
+        mask = new_dist != result_lines['dist']
+        if mask.any():
+            assert (new_dist[mask] < result_lines[mask]['dist']).all(), \
+                    'Line distance was increased: %s'%(
+                        numpy.transpose([result_lines['dist'], new_dist])[new_dist > result_lines['dist']])
+            # Keep aside the changed entries
+            new_rl = result_lines[mask]
+            new_rl['dist'] = new_dist[mask]
+            # Leave unchanged entries only
+            result_lines = result_lines[numpy.logical_not(mask)]
+            # Discard short lines
+            mask = new_rl['dist'] >= min_len
+            if mask.any():
+                new_rl = new_rl[mask]
+                # Insert the changed entries in parallel, by keeping 'result_lines' sorted
+                print('  Reordering %d lines: max/min len %d/%d'%(new_rl.shape[0], new_rl['dist'].max(), new_rl['dist'].min()))
+                result_lines = sorted_arr_insert(result_lines, new_rl, 'dist')
 
     return polylines
 
