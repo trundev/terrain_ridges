@@ -29,6 +29,9 @@ DISTANCE_METHOD = 0
 def VECTOR_LAYER_NAME(valleys): return 'valleys' if valleys else 'ridges'
 def VECTOR_FEATURE_STYLE(valleys): return 'PEN(c:#0000FF,w:2px)' if valleys else 'PEN(c:#FF0000,w:2px)'
 
+KEEP_SNAPSHOT = True
+RESUME_FROM_SNAPSHOT = 0    # Currently 0 to 2
+
 #
 # Generic tools
 #
@@ -385,6 +388,77 @@ def combine_lines(result_lines, dir_arr, min_len=0):
 
     return polylines
 
+#
+# Keep/resume support
+#
+def keep_arrays(prefix, arr_slices):
+    """Store snapshots of multiple arrays"""
+    for arr_name in arr_slices:
+        arr = arr_slices[arr_name][0]
+        slices = arr_slices[arr_name][1:]
+        for sl in slices:
+            if sl is None:
+                # Single slice - complete array
+                arr_sl_name = arr_name
+                arr_sl = arr
+            else:
+                arr_sl_name = '%s[%s]'%(arr_name, sl)
+                arr_sl = arr[sl]
+            fname = '%s%s.npy'%(prefix, arr_sl_name)
+            print('Keeping snapshot of', arr_sl_name, arr_sl.shape, ':', fname)
+            numpy.save(fname, arr_sl)
+
+def restore_arrays(prefix, arr_slices, restore=False):
+    """Load snapshots of multiple arrays"""
+    res_list = []
+    for arr_name in arr_slices:
+        dtype = arr_slices[arr_name]
+        arr = None
+        for sl in dtype:
+            if sl is None:
+                # Single slice - complete array
+                arr_sl_name = arr_name
+            else:
+                arr_sl_name = '%s[%s]'%(arr_name, sl[0])
+
+            fname = '%s%s.npy'%(prefix, arr_sl_name)
+            print('Restoring snapshot of', arr_sl_name, ':', fname)
+            data = numpy.load(fname)
+            print('  Restored: shape', data.shape, ', dtype', data.dtype)
+
+            if sl is None:
+                arr = data
+            else:
+                if arr is None:
+                    # Create array by using the correct shape, esp. multidimensional sub-array
+                    shape = numpy.empty(0, dtype=dtype)[sl[0]].shape[1:]
+                    shape = data.shape[:data.ndim - len(shape)]
+                    arr = numpy.empty(shape, dtype=dtype)
+                arr[sl[0]] = data
+
+        res_list.append(arr)
+    return res_list
+
+def keep_result_lines_dir_arr(prefix, result_lines, dir_arr):
+    """Store snapshots of the 'result_lines' and 'dir_arr' arrays"""
+    keep_arrays(prefix, {
+            'result_lines': (result_lines, 'x_y', 'dist'),
+            'dir_arr': (dir_arr, 'n_dir', 'dist'),
+    })
+
+def restore_result_lines_dir_arr(prefix):
+    """Load snapshots of the 'result_lines' and 'dir_arr' arrays"""
+    return restore_arrays(prefix, {
+            'result_lines': [
+                    ('x_y', (numpy.int32, (2,))),
+                    ('dist', numpy.float),
+            ],
+            'dir_arr': [
+                    ('n_dir', NEIGHBOR_DIR_DTYPE),
+                    ('dist', numpy.float),
+            ],
+        })
+
 def main(argv):
     """Main entry"""
     valleys = False
@@ -425,29 +499,45 @@ def main(argv):
     #
     # Trace ridges/valleys
     #
-    start = time.time()
+    if RESUME_FROM_SNAPSHOT < 1:
 
-    result_lines, dir_arr = trace_ridges(dem_band, valleys)
-    if result_lines is None:
-        print('Error: Failed to trace ridges', file=sys.stderr)
-        return 2
+        start = time.time()
 
-    duration = time.time() - start
-    print('Traced total %d lines, max length %d, %d sec'%(result_lines.shape[0], result_lines[0]['dist'], duration))
+        # Actual trace
+        result_lines, dir_arr = trace_ridges(dem_band, valleys)
+        if result_lines is None:
+            print('Error: Failed to trace ridges', file=sys.stderr)
+            return 2
+
+        duration = time.time() - start
+        print('Traced total %d lines, max length %d, %d sec'%(result_lines.shape[0], result_lines[0]['dist'], duration))
+
+        if KEEP_SNAPSHOT:
+            keep_result_lines_dir_arr(src_filename + '-1-', result_lines, dir_arr)
+    elif RESUME_FROM_SNAPSHOT == 1:
+        result_lines, dir_arr = restore_result_lines_dir_arr(src_filename + '-1-')
 
     #
     # Flip the longest lines ending in each 'seed' and recalculate the 'dist' members
     # The seeds become the former last point of these lines
     #
-    start = time.time()
+    if RESUME_FROM_SNAPSHOT < 2:
 
-    dir_arr, result_lines = flip_seed_lines(dir_arr, result_lines)
-    if dir_arr is None:
-        print('Error: Failed to flip longest lines', file=sys.stderr)
-        return 2
+        start = time.time()
 
-    duration = time.time() - start
-    print('Flip & merge longest lines, %d sec'%(duration))
+        # Actual flip
+        dir_arr, result_lines = flip_seed_lines(dir_arr, result_lines)
+        if dir_arr is None:
+            print('Error: Failed to flip longest lines', file=sys.stderr)
+            return 2
+
+        duration = time.time() - start
+        print('Flip & merge longest lines, %d sec'%(duration))
+
+        if KEEP_SNAPSHOT:
+            keep_result_lines_dir_arr(src_filename + '-2-', result_lines, dir_arr)
+    elif RESUME_FROM_SNAPSHOT == 2:
+        result_lines, dir_arr = restore_result_lines_dir_arr(src_filename + '-2-')
 
     #
     # Combine traced lines, longer than one-tenth of the longest one
