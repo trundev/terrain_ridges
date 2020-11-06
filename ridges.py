@@ -331,7 +331,8 @@ def main(argv):
                 print('  Deleting layer', gdal_utils.gdal_vect_layer(dst_ds, i).get_name())
                 dst_ds.delete_layer(i)
         # Create new one
-        dst_layer = gdal_utils.gdal_vect_layer.create(dst_ds, VECTOR_LAYER_NAME(valleys), dem_band.get_spatial_ref())
+        dst_layer = gdal_utils.gdal_vect_layer.create(dst_ds, VECTOR_LAYER_NAME(valleys),
+                srs=dem_band.get_spatial_ref(), geom_type=gdal_utils.wkbLineString)
         if dst_layer is None:
             print('Error: Unable to create layer', file=sys.stderr)
             return 1
