@@ -174,6 +174,12 @@ jobs:
         echo "DST_NAME=$DST_NAME" >> ${env:GITHUB_ENV}
         echo "DST_NAME set to $DST_NAME"
 
+        $REF_NAME = Join-Path ${{ env.REF_RESULT_DIR }} $DST_NAME
+        if ( Test-Path $REF_NAME) {
+          echo "REF_NAME=$REF_NAME" >> ${env:GITHUB_ENV}
+          echo "REF_NAME set to $REF_NAME"
+        }
+
         ${{ env.GDAL_DRIVER_PATH }}/../apps/gdalinfo ${{ env.SRC_DEM }}
 
     - name: Generate ridges
@@ -187,12 +193,5 @@ jobs:
           ${{ env.SRC_DEM_DIR }}/*.npy
 
     - name: Validate result
-      run: |
-        $REF_NAME = Join-path ${{ env.REF_RESULT_DIR }} ${{ env.DST_NAME }}
-        if ( ! $(Test-Path $REF_NAME)) {
-          echo "Missing $REF_NAME, validation skipped"
-          exit 0
-        }
-
-        echo "Comparing ${{ env.DST_NAME }} to $REF_NAME..."
-        git diff ${{ env.DST_NAME }} $REF_NAME
+      if: env.REF_NAME
+      run: git diff ${{ env.DST_NAME }} ${{ env.REF_NAME }}
