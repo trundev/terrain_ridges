@@ -365,6 +365,15 @@ def reduced_distance(dir_arr, x_y):
                 return result
         x_y = neighbor_xy(x_y, n_dir)
 
+def reduced_distance_opt(dir_arr, x_y):
+    """Calculate trace distances, optimized by splitting 'x_y' into chunks"""
+    CHUNK_SIZE = 10000
+    new_dist = numpy.empty(0, dtype=dir_arr['dist'].dtype)
+    for start in range(0, x_y.shape[0], CHUNK_SIZE):
+        n_dist = reduced_distance(dir_arr, x_y[start:start + CHUNK_SIZE])
+        new_dist = numpy.concatenate((new_dist, n_dist))
+    return new_dist
+
 def combine_lines(result_lines, dir_arr, min_len=0):
     """Create polylines from previously generated ridges or valleys"""
     # Remove the lines shorter than min_len
@@ -402,7 +411,7 @@ def combine_lines(result_lines, dir_arr, min_len=0):
         print('  Update remaining %d lines: mid/min len %d/%d'%(
                 result_lines.shape[0], result_lines[result_lines.shape[0] // 2]['dist'], result_lines[0]['dist']))
         # Run distance reducing in parallel
-        new_dist = reduced_distance(dir_arr, result_lines['x_y'])
+        new_dist = reduced_distance_opt(dir_arr, result_lines['x_y'])
         mask = new_dist != result_lines['dist']
         if mask.any():
             assert (new_dist[mask] < result_lines[mask]['dist']).all(), \
