@@ -35,21 +35,16 @@ RESUME_FROM_SNAPSHOT = 0    # Currently 0 to 2
 #
 # Generic tools
 #
-def search_sorted(array, cmp_fn, *args):
-    """Generic binary search"""
-    beg = 0
-    end = len(array)
-    res = None
-    while beg < end:
-        mid = (beg + end) // 2
-        res = cmp_fn(array[mid], *args)
-        if res == 0:
-            return mid, res
-        if res < 0:
-            end = mid
-        else:
-            beg = mid + 1
-    return beg, res
+def sorted_arr_insert(arr, entry, key, end=None):
+    """Insert an entry in sorted array by keeping it sorted by key"""
+    # When multiple entries are going to be inserted, ensure they are sorted
+    # This is only mandatory, when multiple elements have the same insertion point
+    if entry.ndim:
+        argsort = numpy.argsort(entry[key])
+        entry = numpy.take(entry, argsort)
+    # Actual insert, do not search beyond 'end'
+    idx = numpy.searchsorted(arr[:end][key], entry[key])
+    return numpy.insert(arr, idx, entry)
 
 #
 # Main processing
@@ -117,12 +112,6 @@ def reduced_distance(dir_arr, x_y):
             return start_dist - dist
         x_y = neighbor_xy(x_y, n_dir)
 
-def result_lines_insert(result_lines, entry, start=0):
-    """Insert entry in result_lines by keeping it sorted by distance (entry[1])"""
-    dist = entry[1]
-    idx, _ = search_sorted(result_lines[start:]['dist'], lambda v: 1 if dist < v else -1)
-    return numpy.insert(result_lines, idx + start, entry)
-
 def select_seed(elevations, valleys, mask=None):
     """Select a point to start ridge/valley tracing"""
     if mask is None:
@@ -173,10 +162,13 @@ def trace_ridges(dem_band, valleys=False):
     del elevations
 
     #
-    # Tentative point list (coord)
+    # Tentative point list (coord and altitude)
     # Initially contains the start point only
     #
-    tentative = seed_xy[numpy.newaxis,...]
+    tentative = numpy.array([(seed_xy, dem_band.get_elevation(seed_xy))], dtype=[
+            ('x_y', (numpy.int32, (2,))),
+            ('alt', numpy.float),
+    ])
 
     #
     # End-points of generated lines (coord and distance)
@@ -191,9 +183,9 @@ def trace_ridges(dem_band, valleys=False):
             else gdal_utils.draft_distance(dem_band)
     progress_next = 0
     while tentative.size:
-        x_y = tentative[-1]
+        x_y, _ = tentative[-1]
         tentative = tentative[:-1]
-        #print('    Processing point %s alt %d, dist %d'%(x_y, dem_band.get_elevation(seed_xy), dist))
+        #print('    Processing point %s alt %d, dist %d'%(x_y, _, gdal_utils.read_arr(dir_arr['dist'], x_y)))
         # The lines can only pass-thru inner DEM pixels, the boundary ones do split
         stop_mask = numpy.logical_or((x_y < 1).any(-1), (dir_arr.shape - x_y <= 1).any(-1))
         successors = 0
@@ -201,30 +193,31 @@ def trace_ridges(dem_band, valleys=False):
             successors += 1
             alt = dem_band.get_elevation(t_xy)
             assert not numpy.isnan(alt), '"NoDataValue" point %s is marked for processing'%t_xy
-            # Insert the point in 'tentative' by keeping it sorted by altitude
-            def cmp_fn(check_xy, *args):
-                # The duplicated altitudes are placed at lowest possible index (<= or >=).
-                # Thus, they are processed in order of appearance (FIFO).
-                if valleys:
-                    # Descending sort FIFO-duplicate (>=)
-                    return -1 if alt >= dem_band.get_elevation(check_xy) else 1
-                # Ascending sort FIFO-duplicate (<=)
-                return -1 if alt <= dem_band.get_elevation(check_xy) else 1
-            idx, _ = search_sorted(tentative, cmp_fn)
-            tentative = numpy.insert(tentative, idx, t_xy, axis=0)
+            # Insert the point in 'tentative' by keeping it sorted by altitude.
+            # The duplicated altitudes must be processed in order of appearance (FIFO), thus they
+            # are inserted at the lowest possible index - "side='left'" (valleys - 'right').
+            if valleys:
+                # Trace valleys: descending sort (reverse the array, including 'side')
+                idx = numpy.searchsorted(tentative['alt'][::-1], alt, side='right')
+                idx = tentative.shape[0] - idx
+            else:
+                # Trace ridges: ascending sort
+                idx = numpy.searchsorted(tentative['alt'], alt, side='left')
+            tentative = numpy.insert(tentative, idx, (t_xy, alt), axis=0)
 
         if successors == 0 or stop_mask.any():
             dist = gdal_utils.read_arr(dir_arr['dist'], x_y)
             #print('  Line finished at point %s total length %d'%(x_y, dist))
             # Keep this end-point in 'result_lines', but if it's at least one pixel
             if dist > 0:
-                result_lines = result_lines_insert(result_lines, (x_y, dist))
+                result_lines = sorted_arr_insert(result_lines,
+                        numpy.array((x_y, dist), dtype=result_lines.dtype), 'dist')
                 #
                 # Progress, each 1000-th line
                 #
                 if progress_next <= result_lines.shape[0]:
                     print('  Tentatives', tentative.shape[0], 'completed', result_lines.shape[0],
-                            'max/mid/min len %d/%d/%d'%(result_lines[0]['dist'], result_lines[result_lines.shape[0] // 2]['dist'], result_lines[-1]['dist']))
+                            'max/mid/min len %d/%d/%d'%(result_lines[-1]['dist'], result_lines[result_lines.shape[0] // 2]['dist'], result_lines[0]['dist']))
                     progress_next += 1000
 
             # After the 'tentative' is exhausted, there still can be islands of valid elevations,
@@ -234,9 +227,10 @@ def trace_ridges(dem_band, valleys=False):
                 if mask.any():
                     # Restart at the highest/lowest unprocessed point
                     seed_xy = select_seed(dem_band.get_elevation(True), valleys, numpy.logical_not(mask))
-                    print('Restart tracing from seed point', seed_xy, ', altitude', dem_band.get_elevation(seed_xy))
+                    alt = dem_band.get_elevation(seed_xy)
+                    print('Restart tracing from seed point', seed_xy, ', altitude', alt)
                     gdal_utils.write_arr(dir_arr, seed_xy, (NEIGHBOR_SEED, 0.))
-                    tentative = seed_xy[numpy.newaxis,...]
+                    tentative = numpy.array([(seed_xy, alt)], dtype=tentative.dtype)
 
     return result_lines, dir_arr
 
@@ -276,7 +270,7 @@ def flip_seed_lines(dir_arr, result_lines):
     #   section.
     new_result_lines = numpy.empty(0, dtype=result_lines.dtype)
     progress_next = 0
-    for start_xy, _ in result_lines:
+    for start_xy, _ in reversed(result_lines):
         # Scan the line upto already updated point, 'seed' or 'stop' markers
         x_y = start_xy
         n_dir, start_dist = gdal_utils.read_arr(dir_arr, x_y)
@@ -305,7 +299,7 @@ def flip_seed_lines(dir_arr, result_lines):
             # This reached 'seed' - flip it, later others will merge to it
             start_xy = flip_line(new_dir_arr, dir_arr, start_xy)
             # Note:
-            # The result_lines_insert() is called to handle the case when this is the only line
+            # The sorted_arr_insert() is called to handle the case when this is the only line
             # ending in that 'seed' (quite rare case). In other cases, at the next stage it will
             # be discarded: reduced_distance() will cut it zero, as it is completelly ovelapped.
         else:
@@ -327,14 +321,15 @@ def flip_seed_lines(dir_arr, result_lines):
                 x_y = neighbor_xy(x_y, n_dir)
 
         #assert start_dist == reduced_distance(new_dir_arr, start_xy)
-        new_result_lines = result_lines_insert(new_result_lines, (start_xy, start_dist))
+        new_result_lines = sorted_arr_insert(new_result_lines,
+                numpy.array((start_xy, start_dist), dtype=result_lines.dtype), 'dist')
 
         #
         # Progress, total ~10 messages
         #
         if progress_next < new_result_lines.shape[0]:
             print('  Adjusted', new_result_lines.shape[0], 'lines, max/mid/min len %d/%d/%d'%(
-                    new_result_lines[0]['dist'], new_result_lines[new_result_lines.shape[0] // 2]['dist'], new_result_lines[-1]['dist']))
+                    new_result_lines[-1]['dist'], new_result_lines[new_result_lines.shape[0] // 2]['dist'], new_result_lines[0]['dist']))
             progress_next += result_lines.shape[0] // 10
 
     return new_dir_arr, new_result_lines
@@ -345,8 +340,8 @@ def combine_lines(result_lines, dir_arr, min_len=0):
     # Process the lines longer than min_len
     prev_dist = numpy.inf    # Assert only
     while result_lines.size:
-        x_y, dist = result_lines[0]
-        result_lines = result_lines[1:]
+        x_y, dist = result_lines[-1]
+        result_lines = result_lines[:-1]
         assert dist <= prev_dist, 'Unsorted result_lines %d->%d'%(prev_dist, dist); prev_dist = dist
         if dist < min_len:
             break
@@ -364,27 +359,29 @@ def combine_lines(result_lines, dir_arr, min_len=0):
             break
 
         # Update distances after some of the lines were cut
-        print('  Update remaining %d lines: mid/min len %d/%d'%(result_lines.shape[0], result_lines[result_lines.shape[0] // 2]['dist'], result_lines[-1]['dist']))
+        print('  Update remaining %d lines: mid/min len %d/%d'%(result_lines.shape[0], result_lines[result_lines.shape[0] // 2]['dist'], result_lines[0]['dist']))
         progress_next = 1
-        idx = 0
-        while idx < result_lines.shape[0]:
-            x_y, old_dist = result_lines[idx]
-            dist = reduced_distance(dir_arr, x_y)
-            if dist == old_dist:
+        idx = result_lines.shape[0] - 1
+        while idx >= 0:
+            rline = result_lines[idx]
+            dist = reduced_distance(dir_arr, rline['x_y'])
+            if dist == rline['dist']:
                 #
                 # Progress (logarithmic), total ~10 messages
                 #
                 if progress_next <= 1 + idx / result_lines.shape[0]:
                     print('    Updated line at %d/%d: len %d'%(idx, result_lines.shape[0], result_lines[idx]['dist']))
                     progress_next *= 1.07   # 2^(1/10)
-                idx += 1
             else:
-                assert dist < old_dist, 'Line distance was increased %d->%d'%(old_dist, dist)
+                assert dist < rline['dist'], 'Line distance was increased %d->%d'%(rline['dist'], dist)
                 # Move the entry to keep 'result_lines' sorted by distance
                 result_lines = numpy.delete(result_lines, idx)
                 if dist >= min_len:
-                    #print('    Updating line at %d/%d, distance %d->%d'%(idx, result_lines.shape[0], old_dist, dist))
-                    result_lines = result_lines_insert(result_lines, (x_y, dist), idx)
+                    #print('    Updating line at %d/%d, distance %d->%d'%(idx, result_lines.shape[0], rline['dist'], dist))
+                    rline['dist'] = dist
+                    result_lines = sorted_arr_insert(result_lines, rline, 'dist', idx)
+                    idx += 1    # Hold the next decrement
+            idx -= 1
 
     return polylines
 
@@ -510,7 +507,7 @@ def main(argv):
             return 2
 
         duration = time.time() - start
-        print('Traced total %d lines, max length %d, %d sec'%(result_lines.shape[0], result_lines[0]['dist'], duration))
+        print('Traced total %d lines, max length %d, %d sec'%(result_lines.shape[0], result_lines[-1]['dist'], duration))
 
         if KEEP_SNAPSHOT:
             keep_result_lines_dir_arr(src_filename + '-1-', result_lines, dir_arr)
@@ -544,7 +541,7 @@ def main(argv):
     #
     start = time.time()
 
-    polylines = combine_lines(result_lines, dir_arr, result_lines[0][1] / 10)
+    polylines = combine_lines(result_lines, dir_arr, result_lines[-1]['dist'] / 10)
     if not polylines:
         print('Error: Failed to combine lines', file=sys.stderr)
         return 2
