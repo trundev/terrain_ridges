@@ -15,15 +15,14 @@ def write_arr(arr, x_y, val):
     """Put data to multiple indices in array"""
     if x_y.ndim < 3:
         arr[tuple(x_y.T)] = val     # Performance optimization
+        return
     # Avoid numpy "Advanced Indexing"
-    arr[tuple(numpy.moveaxis(x_y, -1, 0))] = val
+    arr[tuple(x_y.T)] = numpy.array(val, dtype=arr.dtype).T
 
 def read_arr(arr, x_y):
     """Get multiple indices from array"""
-    if x_y.ndim < 3:
-        return arr[tuple(x_y.T)]    # Performance optimization
     # Force numpy "Basic Indexing", note that '[x_y]' will trigger "Advanced Indexing"
-    return arr[tuple(numpy.moveaxis(x_y, -1, 0))]
+    return arr[tuple(x_y.T)].T
 
 #
 # GDAL helpers
@@ -197,11 +196,9 @@ class geod_distance:
         disp = lonlatalt[...,1,2] - lonlatalt[...,0,2]
         # Precise method by calling pyproj.Geod.inv() between points
         lonlat = lonlatalt[...,:2].reshape([*lonlatalt.shape[:-2], -1])
-        if lonlat.ndim < 3:
-            lonlat = lonlat.T       # Performance optimization
-        else:
-            lonlat = numpy.moveaxis(lonlat, -1, 0)
+        lonlat = lonlat.T
         _, _, dist = self.geod.inv(*lonlat)
+        dist = dist.T
         # Adjust distance with the altitude displacement
         return numpy.sqrt(dist*dist + disp*disp)
 
