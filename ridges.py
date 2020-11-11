@@ -86,7 +86,7 @@ def process_neighbors(dem_band, distance, dir_arr, x_y, stop_mask):
     # Filter already processed pixels
     mask = gdal_utils.read_arr(dir_arr['n_dir'], n_xy) == NEIGHBOR_PENDING
     if not mask.any():
-        return ()
+        return None
     if not mask.all():
         n_xy = n_xy[mask]
         n_dir = n_dir[mask]
@@ -188,24 +188,24 @@ def trace_ridges(dem_band, valleys=False):
         #print('    Processing point %s alt %d, dist %d'%(x_y, _, gdal_utils.read_arr(dir_arr['dist'], x_y)))
         # The lines can only pass-thru inner DEM pixels, the boundary ones do split
         stop_mask = numpy.logical_or((x_y < 1).any(-1), (dir_arr.shape - x_y <= 1).any(-1))
-        successors = 0
-        for t_xy in process_neighbors(dem_band, distance, dir_arr, x_y, stop_mask):
-            successors += 1
-            alt = dem_band.get_elevation(t_xy)
-            assert not numpy.isnan(alt), '"NoDataValue" point %s is marked for processing'%t_xy
-            # Insert the point in 'tentative' by keeping it sorted by altitude.
-            # The duplicated altitudes must be processed in order of appearance (FIFO), thus they
-            # are inserted at the lowest possible index - "side='left'" (valleys - 'right').
+        n_xy = process_neighbors(dem_band, distance, dir_arr, x_y, stop_mask)
+        if n_xy is not None:
+            alts = dem_band.get_elevation(n_xy)
+            assert not numpy.isnan(alts).any(), '"NoDataValue" point(s) %s are marked for processing'%n_xy[numpy.isnan(alts)]
+            # The valleys are handled by turning the elevations upside down
             if valleys:
-                # Trace valleys: descending sort (reverse the array, including 'side')
-                idx = numpy.searchsorted(tentative['alt'][::-1], alt, side='right')
-                idx = tentative.shape[0] - idx
-            else:
-                # Trace ridges: ascending sort
-                idx = numpy.searchsorted(tentative['alt'], alt, side='left')
-            tentative = numpy.insert(tentative, idx, (t_xy, alt), axis=0)
+                alts = -alts
+            # Insert the points in 'tentative' by keeping it sorted by altitude.
+            # The duplicated altitudes must be processed in order of appearance (FIFO),
+            # i.e. numpy.searchsorted() with "side='left'".
+            tentr = numpy.empty(alts.shape, dtype=tentative.dtype)
+            tentr['x_y'] = n_xy
+            tentr['alt'] = alts
+            # The 'tentr' is flipped, only to keep the previous behavior, i.e. the FIFO rule is in
+            # effect for the order of 'n_xy'. This is the same as if VALID_NEIGHBOR_DIRS is flipped.
+            tentative = sorted_arr_insert(tentative, tentr[::-1], 'alt')
 
-        if successors == 0 or stop_mask.any():
+        if n_xy is None or stop_mask.any():
             dist = gdal_utils.read_arr(dir_arr['dist'], x_y)
             #print('  Line finished at point %s total length %d'%(x_y, dist))
             # Keep this end-point in 'result_lines', but if it's at least one pixel
