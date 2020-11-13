@@ -336,15 +336,21 @@ def flip_seed_lines(dir_arr, result_lines):
 
 def combine_lines(result_lines, dir_arr, min_len=0):
     """Create polylines from previously generated ridges or valleys"""
+    # Remove the lines shorter than min_len
+    idx = numpy.searchsorted(result_lines['dist'], min_len)
+    result_lines = result_lines[idx:]
+
+    #
+    # Extract the longest lines one-by-one and cut all that overlaps it
+    #
     polylines = []
-    # Process the lines longer than min_len
     prev_dist = numpy.inf    # Assert only
     while result_lines.size:
         x_y, dist = result_lines[-1]
         result_lines = result_lines[:-1]
         assert dist <= prev_dist, 'Unsorted result_lines %d->%d'%(prev_dist, dist); prev_dist = dist
-        if dist < min_len:
-            break
+        assert dist >= min_len, 'Short line in result_lines %d/%d'%(dist, min_len)
+
         print('Generating line starting at point %s total length %d'%(x_y, dist))
         pline = []
         # Trace route
