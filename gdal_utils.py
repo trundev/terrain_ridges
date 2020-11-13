@@ -157,25 +157,25 @@ class gdal_dem_band(gdal_dataset):
             alt = read_arr(self.dem_buf, x_y)
         return alt
 
-    def xy2coords(self, x_y):
+    def xy2coords(self, x_y, center=True):
         """Convert raster (x,y) to the dataset's SRS coordinate(s)"""
-        if True:
+        if center:
             # Adjust point to the center of the raster pixel
             # (otherwise, the coordinates will be at the top-left (NW) corner)
             x_y = x_y + .5
         return self.affine_xform(x_y)
 
-    def xy2lonlat(self, x_y):
+    def xy2lonlat(self, x_y, center=True):
         """Convert raster (x,y) coordinate(s) to lon/lan (east,north)"""
-        coords = self.xy2coords(x_y)
+        coords = self.xy2coords(x_y, center)
         if self.geogcs_xform is None:
             return coords
         # The geogcs_xform is valid when coordinates are non-geographic
         return self.coord_xform(self.geogcs_xform, coords)
 
-    def xy2lonlatalt(self, x_y):
+    def xy2lonlatalt(self, x_y, center=True):
         """Convert raster (x,y) coordinate(s) to lon/lan/alt (east,north,alt)"""
-        lon_lat = self.xy2lonlat(x_y)
+        lon_lat = self.xy2lonlat(x_y, center)
         alt = self.get_elevation(x_y)[...,numpy.newaxis]
         return numpy.concatenate((lon_lat, alt), axis=-1)
 
@@ -197,9 +197,9 @@ class tm_transform:
         tm_srs.SetTM(*lonlat[-1::-1], scale, false_easting, false_northing)
         self.tm_xform = self.dem_band.build_srs_xform(tm_srs)
 
-    def xy2tm(self, x_y):
+    def xy2tm(self, x_y, center=True):
         """Convert raster (x,y) to the selected Transverse Mercator"""
-        return self.dem_band.coord_xform(self.tm_xform, self.dem_band.xy2coords(x_y))
+        return self.dem_band.coord_xform(self.tm_xform, self.dem_band.xy2coords(x_y, center))
 
 #
 # Distance calculator
@@ -292,6 +292,8 @@ def dem_open(filename, band=1):
 wkbUnknown = ogr.wkbUnknown
 wkbPoint = ogr.wkbPoint
 wkbLineString = ogr.wkbLineString
+wkbPolygon = ogr.wkbPolygon
+wkbLinearRing = ogr.wkbLinearRing
 wkbPoint25D = ogr.wkbPoint25D
 wkbLineString25D = ogr.wkbLineString25D
 wkbPolygon25D = ogr.wkbPolygon25D
@@ -339,11 +341,13 @@ class gdal_feature_geometry:
         self.geom = geom
 
     def set_field(self, name, value):
-        a = self.feat.SetField(name, value)
-        return a
+        return self.feat.SetField(name, value)
 
     def add_point(self, *coord):
         self.geom.AddPoint(*coord)
+
+    def add_geometry(self, geom):
+        self.geom.AddGeometry(geom.geom)
 
     def get_style_string(self):
         return self.feat.GetStyleString()
@@ -352,6 +356,8 @@ class gdal_feature_geometry:
         self.feat.SetStyleString(string)
 
     def create(self):
+        # If this is a 'ring' geometry, close it
+        self.geom.CloseRings()
         self.feat.SetGeometry(self.geom)
         self.layer.CreateFeature(self.feat)
 
