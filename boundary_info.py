@@ -17,24 +17,95 @@ def get_mgrid(org_xy, size_xy, full=False):
     # The coordinates are in the last dimension
     return numpy.moveaxis(mgrid, 0, -1)
 
+def create_ring_by_mask(ring, dem_band, mask):
+    """Create ring"""
+    # The 4 90-deg rotations of the unit x-vector, clockwise
+    x_rots = numpy.array(((1,0), (0,1), (-1,0), (0,-1)), dtype=numpy.int8)
+
+    # Helper finctions
+    def is_masked(x_y):
+        """Safe read from mask array, False if outside"""
+        if (x_y < 0).any() or (x_y >= mask.shape).any():
+            return False
+        return gdal_utils.read_arr(mask, x_y)
+    def add_point(x_y, dir):
+        """Add the point at the 'correct' edge of pixel"""
+        # Workaround for "Ring Self-intersection at or near point..." / "Invalid polygon":
+        # Deflate the geometry by 1%
+        dir = dir * .495
+        ring.add_point(*dem_band.xy2lonlat(x_y - dir))
+
+    start_xy = numpy.array(numpy.unravel_index(mask.argmax(), mask.shape))
+
+    # Trace around this shape by using the right-hand rule
+    x_y = start_xy.copy()
+    while True:
+        # Check the forward pixels
+        if is_masked(x_y + x_rots[0]):
+            # Masked: move forward
+            x_y += x_rots[0]
+            # Check the left pixel (counter-clockwise)
+            if is_masked(x_y + x_rots[-1]):
+                # Masked: add point, move to left, rotate counter-clockwise
+                add_point(x_y, x_rots[0] + x_rots[1])
+                x_y += x_rots[-1]
+                x_rots = numpy.roll(x_rots, 1, axis=0)
+        else:
+            # Not masked: rotate clockwise, add point (no move)
+            x_rots = numpy.roll(x_rots, -1, axis=0)
+            add_point(x_y, x_rots[0] + x_rots[1])
+
+        # Check for loop completion
+        # (only allowed when moving toward as when started)
+        if (x_y == start_xy).all() and x_rots[0,0] == 1:
+            return
+
 def create_no_data_geom(dem_band, dst_layer):
     """Add polygons around "NoDataValue" points"""
+    shape = dem_band.get_elevation(True).shape
+
+    # Self-pointing (plain) map
+    plain_map = get_mgrid((0,0), shape, True)
+    # Map toward the four direction (right, up, left, down)
+    # will be used with read_arr() to 
+    four_dir_map = numpy.stack((
+        # right
+            numpy.concatenate((plain_map[:1], plain_map[:-1]), axis=0),
+        # up
+            numpy.concatenate((plain_map[:,:1], plain_map[:,:-1]), axis=1),
+        # left
+            numpy.concatenate((plain_map[1:], plain_map[-1:]), axis=0),
+        # down
+            numpy.concatenate((plain_map[:,1:], plain_map[:,-1:]), axis=1)))
+    del plain_map
+
     nodata_mask = numpy.isnan(dem_band.get_elevation(True))
     progress_idx = 0
     while nodata_mask.any():
         # Extract a "NoDataValue" point
         x_y = numpy.array(numpy.unravel_index(nodata_mask.argmax(), nodata_mask.shape))
-        gdal_utils.write_arr(nodata_mask, x_y, False)
+        cur_mask = numpy.zeros_like(nodata_mask)
+        gdal_utils.write_arr(cur_mask, x_y, True)
 
-        # Obtain coordinates around the point
-        boundary = dem_band.xy2lonlat(get_mgrid(x_y, (1,1)), False)
+        # Expand the mask till it stops changing
+        while True:
+            # Expand the mask toward the 4 directions
+            msk = gdal_utils.read_arr(cur_mask, four_dir_map).any(axis=0)
+            # ...then, combine with 'nodata_mask'
+            msk &= nodata_mask
+            # Here 'msk' will be empty, if this is an isolated single point
+            if msk.max() == False or (cur_mask == msk).all():
+                break
+            cur_mask |= msk
+
+        nodata_mask ^= cur_mask
+
+        # Create ring geometry around that mask
         ring = dst_layer.create_feature_geometry(gdal_utils.wkbLinearRing)
-        # Create geometry, second boundary row must be reversed
-        for lonlat in (*boundary[0], *boundary[1][::-1]):
-            ring.add_point(*lonlat)
+        create_ring_by_mask(ring, dem_band, cur_mask)
 
         geom = dst_layer.create_feature_geometry(gdal_utils.wkbPolygon)
-        geom.set_field('Name', 'NoDataValue %d,%d'%(*x_y,))
+        geom.set_field('Name', 'NoDataValue: %d at %d,%d'%(numpy.count_nonzero(cur_mask), *x_y))
         geom.set_style_string(DEM_NODATA_FEATURE_STYLE)
         geom.add_geometry(ring)
         geom.create()
