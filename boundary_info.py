@@ -1,24 +1,53 @@
 """Generate/append informational OGR geometry for a DEM"""
 import sys
+import time
 import numpy
 import gdal_utils
 
-DEM_BOUNDARY_FEATURE_STYLE = 'PEN(c:#00FF00,w:1px);BRUSH(fc:#00FF0020)'
-DEM_NODATA_FEATURE_STYLE = 'PEN(c:#FF0000,w:1px);BRUSH(fc:#FF000080)'
+DEM_BOUNDARY_FEATURE_STYLE = 'PEN(c:#208020,w:1px);BRUSH(fc:#10801020)'
+DEM_NODATA_FEATURE_STYLE = 'PEN(c:#802020,w:1px);BRUSH(fc:#80101080)'
 
 def get_mgrid(org_xy, size_xy, full=False):
     """Create a 2x2 grid around a boundary, or a full grid"""
-    end_xy = numpy.array(org_xy) + numpy.array(size_xy)
     if full:
-        size_xy = (1,1)
+        mgrid = numpy.mgrid[:size_xy[0], :size_xy[1]]
     else:
-        end_xy += 1
-    mgrid = numpy.mgrid[org_xy[0]:end_xy[0]:size_xy[0], org_xy[1]:end_xy[1]:size_xy[1]]
+        mgrid = numpy.mgrid[:2,:2] * numpy.array(size_xy)[:,numpy.newaxis,numpy.newaxis]
     # The coordinates are in the last dimension
-    return numpy.moveaxis(mgrid, 0, -1)
+    return numpy.moveaxis(mgrid, 0, -1) + org_xy
 
-def create_ring_by_mask(ring, dem_band, mask):
-    """Create ring"""
+class expand_mask:
+    """Mask expansion tool"""
+    def __init__(self, shape):
+        """Prepare the map-array toward the 4-directions"""
+        plain_map = get_mgrid((0,0), shape, True)
+        # Map toward the four directions (right, up, left, down), to be used with read_arr()
+        self.four_dir_map = numpy.stack((
+            # right
+                numpy.concatenate((plain_map[:1], plain_map[:-1]), axis=0),
+            # up
+                numpy.concatenate((plain_map[:,:1], plain_map[:,:-1]), axis=1),
+            # left
+                numpy.concatenate((plain_map[1:], plain_map[-1:]), axis=0),
+            # down
+                numpy.concatenate((plain_map[:,1:], plain_map[:,-1:]), axis=1)))
+
+    def expand(self, src_mask, target_mask):
+        """Expand a mask till completely fills island(s) in the target"""
+        while True:
+            # Expand the mask toward the 4 directions
+            mask = gdal_utils.read_arr(src_mask, self.four_dir_map).any(axis=0)
+            mask |= src_mask
+            # ...then, cut the 'target_mask'
+            mask &= target_mask
+            # Check if the expansion has stopped
+            if (src_mask == mask).all():
+                return src_mask
+            src_mask = mask
+
+def create_ring_by_mask(dst_layer, dem_band, mask):
+    """Create ring geometry around masked pixels"""
+    ring = dst_layer.create_feature_geometry(gdal_utils.wkbLinearRing)
     # The 4 90-deg rotations of the unit x-vector, clockwise
     x_rots = numpy.array(((1,0), (0,1), (-1,0), (0,-1)), dtype=numpy.int8)
 
@@ -34,7 +63,12 @@ def create_ring_by_mask(ring, dem_band, mask):
         # Deflate the geometry by 1%
         dir = dir * .495
         ring.add_point(*dem_band.xy2lonlat(x_y - dir))
+    def write_arr_safe(arr, x_y, val):
+        """Write to array by ignoring out of bounds locations"""
+        if (x_y >= 0).all() and (x_y < arr.shape).all():
+            gdal_utils.write_arr(arr, x_y, val)
 
+    frame_mask = numpy.ones_like(mask)
     start_xy = numpy.array(numpy.unravel_index(mask.argmax(), mask.shape))
 
     # Trace around this shape by using the right-hand rule
@@ -50,69 +84,65 @@ def create_ring_by_mask(ring, dem_band, mask):
                 add_point(x_y, x_rots[0] + x_rots[1])
                 x_y += x_rots[-1]
                 x_rots = numpy.roll(x_rots, 1, axis=0)
+            else:
+                write_arr_safe(frame_mask, x_y + x_rots[-1], False)
         else:
             # Not masked: rotate clockwise, add point (no move)
             x_rots = numpy.roll(x_rots, -1, axis=0)
             add_point(x_y, x_rots[0] + x_rots[1])
+            write_arr_safe(frame_mask, x_y + x_rots[-1], False)
 
         # Check for loop completion
         # (only allowed when moving toward as when started)
         if (x_y == start_xy).all() and x_rots[0,0] == 1:
-            return
+            return ring, start_xy, frame_mask
 
 def create_no_data_geom(dem_band, dst_layer):
     """Add polygons around "NoDataValue" points"""
-    shape = dem_band.get_elevation(True).shape
+    start = time.time()
 
-    # Self-pointing (plain) map
-    plain_map = get_mgrid((0,0), shape, True)
-    # Map toward the four direction (right, up, left, down)
-    # will be used with read_arr() to 
-    four_dir_map = numpy.stack((
-        # right
-            numpy.concatenate((plain_map[:1], plain_map[:-1]), axis=0),
-        # up
-            numpy.concatenate((plain_map[:,:1], plain_map[:,:-1]), axis=1),
-        # left
-            numpy.concatenate((plain_map[1:], plain_map[-1:]), axis=0),
-        # down
-            numpy.concatenate((plain_map[:,1:], plain_map[:,-1:]), axis=1)))
-    del plain_map
-
+    # Prepare the "expand mask" tool
     nodata_mask = numpy.isnan(dem_band.get_elevation(True))
-    progress_idx = 0
+    expand = expand_mask(nodata_mask.shape)
+
+    num_geometries = 0
+    num_islands = 0
     while nodata_mask.any():
-        # Extract a "NoDataValue" point
-        x_y = numpy.array(numpy.unravel_index(nodata_mask.argmax(), nodata_mask.shape))
+        # Create ring geometry around some of the islands
+        ring, x_y, frame_mask = create_ring_by_mask(dst_layer, dem_band, nodata_mask)
+        # Expand the mask till it fills this island
         cur_mask = numpy.zeros_like(nodata_mask)
         gdal_utils.write_arr(cur_mask, x_y, True)
-
-        # Expand the mask till it stops changing
-        while True:
-            # Expand the mask toward the 4 directions
-            msk = gdal_utils.read_arr(cur_mask, four_dir_map).any(axis=0)
-            # ...then, combine with 'nodata_mask'
-            msk &= nodata_mask
-            # Here 'msk' will be empty, if this is an isolated single point
-            if msk.max() == False or (cur_mask == msk).all():
-                break
-            cur_mask |= msk
-
+        cur_mask = expand.expand(cur_mask, nodata_mask)
         nodata_mask ^= cur_mask
-
-        # Create ring geometry around that mask
-        ring = dst_layer.create_feature_geometry(gdal_utils.wkbLinearRing)
-        create_ring_by_mask(ring, dem_band, cur_mask)
+        assert ((frame_mask & cur_mask) == cur_mask).all(), 'The "frame_mask" ovelaps "cur_mask"'
 
         geom = dst_layer.create_feature_geometry(gdal_utils.wkbPolygon)
         geom.set_field('Name', 'NoDataValue: %d at %d,%d'%(numpy.count_nonzero(cur_mask), *x_y))
         geom.set_style_string(DEM_NODATA_FEATURE_STYLE)
         geom.add_geometry(ring)
+
+        #
+        # Create ring geometries inside the mask (islands inside this island are not supported)
+        #
+        # Expand the mask to fill all its islands, then XOR it to the original
+        cur_mask = expand.expand(cur_mask, frame_mask) ^ cur_mask
+        while cur_mask.any():
+            ring, x_y, _ = create_ring_by_mask(dst_layer, dem_band, cur_mask)
+            geom.add_geometry(ring)
+            # Expand the mask till it fills this island
+            mask = numpy.zeros_like(cur_mask)
+            gdal_utils.write_arr(mask, x_y, True)
+            mask = expand.expand(mask, cur_mask)
+            cur_mask ^= mask
+
+            num_islands += 1
+
         geom.create()
+        num_geometries += 1
 
-        progress_idx += 1
-
-    print('Created %d "NoDataValue" markers'%progress_idx)
+    print('Created %d "NoDataValue" polygons, %d islands inside, %d sec'%(
+            num_geometries, num_islands, time.time() - start))
     return True
 
 def create_boundary_geom(dem_band, dst_layer):
@@ -133,6 +163,9 @@ def create_boundary_geom(dem_band, dst_layer):
 
     geom.add_geometry(ring)
     geom.create()
+
+    print('Created boundary polygon %.6f %.6f %.6f %.6f'%(
+            *boundary[0,0], *boundary[-1,-1]))
     return True
 
 def create_info_geometries(dem_band, dst_ds):
