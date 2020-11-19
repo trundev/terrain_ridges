@@ -2,9 +2,7 @@
 import os
 import sys
 import numpy
-import gdal
-import ogr
-import osr
+from osgeo import gdal, ogr, osr
 try:
     import pyproj
 except ImportError as ex:
