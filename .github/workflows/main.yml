@@ -29,7 +29,7 @@ env:
   GDALWARP_OPTIONS: "${{ github.event.inputs.GDALWARP_OPTIONS }}"
   DEF_SRC_URL: "https://dds.cr.usgs.gov/srtm/version2_1/SRTM3/Eurasia/N39E021.hgt.zip"
   DEF_DST_EXT: ".kml"
-  DEF_GDALWARP_OPTIONS: "-te 21.5 39.5 22.0 39.0" # SE quarter of N39E021.hgt (600x600)
+  DEF_GDALWARP_OPTIONS: "-te 21.5 39.0 22.0 39.5" # SE quarter of N39E021.hgt (600x600)
   # GDAL prebuilt package from https://gisinternals.com/release.php,
   # will add ".zip",  "-libs.zip" and "-src.zip"
   GDAL_URL_PREFIX: "http://download.gisinternals.com/sdk/downloads/release-1911-x64-gdal-3-2-0-mapserver-7-6-1"
