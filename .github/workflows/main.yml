@@ -56,13 +56,10 @@ jobs:
 
     - uses: actions/checkout@v2
 
-    # GDAL and Python 3.8 problem:
-    # With USE_PATH_FOR_GDAL_PYTHON and python 3.8, "osgeo\__init__.py" pass all directories
-    # from PATH to os.add_dll_directory(), which fails if any of them is missing.
-    - name: Set up Python 3.7
+    - name: Set up Python 3.8
       uses: actions/setup-python@v2
       with:
-        python-version: 3.7
+        python-version: 3.8
 
     - name: Get pip cache dir
       id: pip-cache-dir
@@ -110,12 +107,6 @@ jobs:
         echo "PROJ_LIB=$PROJ_LIB" >> ${env:GITHUB_ENV}
         echo "PROJ_LIB set to $PROJ_LIB"
 
-        echo "$GDAL_BASE/bin" >> ${env:GITHUB_PATH}
-        echo "Path added: $GDAL_BASE/bin"
-
-        echo "USE_PATH_FOR_GDAL_PYTHON=YES" >> ${env:GITHUB_ENV}
-        echo "USE_PATH_FOR_GDAL_PYTHON set to YES"
-
         # Confusing ERROR messages workaround:
         # Delete plugin DLLs that can't be loaded
         del -EA SilentlyContinue $GDAL_DRIVER_PATH/gdal_GEOR.dll
@@ -135,6 +126,19 @@ jobs:
         } else {
           pip install numpy gdal pyproj
         }
+        if ($LASTEXITCODE) {exit $LASTEXITCODE}
+
+        # GDAL and Python 3.8 problem:
+        # With USE_PATH_FOR_GDAL_PYTHON and python 3.8, "osgeo\__init__.py" pass all directories
+        # from PATH to os.add_dll_directory(), which fails if any of them is missing.
+        # Fix:
+        # Copy all GDAL DLLs to the 'osgeo' location (it is under python's 'lib/site-packages')
+        $OSGEO_DIR=$(python -c "from importlib import util; print(util.find_spec('osgeo').submodule_search_locations[0])")
+        echo "Copy all GDAL DLLs to $OSGEO_DIR (avoid USE_PATH_FOR_GDAL_PYTHON)"
+        copy "${{ env.GDAL_DRIVER_PATH }}/../../*.dll" "$OSGEO_DIR"
+
+        echo "$OSGEO_DIR" >> ${env:GITHUB_PATH}
+        echo "Path added: $OSGEO_DIR"
 
     - name: Download source DEM
       run: |
