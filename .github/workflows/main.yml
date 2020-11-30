@@ -19,6 +19,10 @@ on:
         description: "Modify the source via gdalwarp, like (-ts <w> <h>, -te <xmin> <ymin> <xmax> <ymax>)"
         required: false
         default: ""
+      UPDATE_CACHES:
+        description: "Force update of GitHub workflow caches"
+        required: false
+        default: "false"
   push:
     branches: [ master, '**-test' ]
   pull_request:
@@ -69,12 +73,13 @@ jobs:
 
     - name: Pip cache
       id: pip-cache
-      uses: actions/cache@v2
+      uses: davidsbond/cache@master
       with:
         path: |
           ${{ steps.pip-cache-dir.outputs.dir }}
           GDAL
         key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}-${{ env.GIS_SDK_URL }}
+        update: ${{ github.event.inputs.UPDATE_CACHES }}
 
     - name: Clone GDAL sources
       if: steps.pip-cache.outputs.cache-hit != 'true'
