@@ -73,7 +73,7 @@ def neighbor_is_invalid(neighbor_dir):
     """Return mask of where the neighbor directions are invalid"""
     return neighbor_dir > NEIGHBOR_LAST_VALID
 
-def process_neighbors(dem_band, distance, dir_arr, x_y, stop_mask):
+def process_neighbors(dem_band, distance, dir_arr, x_y):
     """Process the valid and pending neighbor points and return a list to be put to tentative"""
     x_y = x_y[...,numpy.newaxis,:]
     n_xy = neighbor_xy(x_y, VALID_NEIGHBOR_DIRS)
@@ -83,10 +83,12 @@ def process_neighbors(dem_band, distance, dir_arr, x_y, stop_mask):
     if not mask.all():
         n_xy = n_xy[mask]
         n_dir = n_dir[mask]
+    # The lines can only pass-thru inner DEM pixels, the boundary ones do split
+    stop_mask = ~mask.all(-1)
     # Filter already processed pixels
     mask = gdal_utils.read_arr(dir_arr['n_dir'], n_xy) == NEIGHBOR_PENDING
     if not mask.any():
-        return None
+        return None, None
     if not mask.all():
         n_xy = n_xy[mask]
         n_dir = n_dir[mask]
@@ -101,7 +103,7 @@ def process_neighbors(dem_band, distance, dir_arr, x_y, stop_mask):
         n_dist[stop_mask] = 0.
     gdal_utils.write_arr(dir_arr['n_dir'], n_xy, n_dir)
     gdal_utils.write_arr(dir_arr['dist'], n_xy, n_dist)
-    return n_xy
+    return n_xy, stop_mask
 
 def reduced_distance(dir_arr, x_y):
     """Calculate trace distance upto the next NEIGHBOR_STOP"""
@@ -186,9 +188,7 @@ def trace_ridges(dem_band, valleys=False):
         x_y, _ = tentative[-1]
         tentative = tentative[:-1]
         #print('    Processing point %s alt %d, dist %d'%(x_y, _, gdal_utils.read_arr(dir_arr['dist'], x_y)))
-        # The lines can only pass-thru inner DEM pixels, the boundary ones do split
-        stop_mask = numpy.logical_or((x_y < 1).any(-1), (dir_arr.shape - x_y <= 1).any(-1))
-        n_xy = process_neighbors(dem_band, distance, dir_arr, x_y, stop_mask)
+        n_xy, stop_mask = process_neighbors(dem_band, distance, dir_arr, x_y)
         if n_xy is not None:
             alts = dem_band.get_elevation(n_xy)
             assert not numpy.isnan(alts).any(), '"NoDataValue" point(s) %s are marked for processing'%n_xy[numpy.isnan(alts)]
