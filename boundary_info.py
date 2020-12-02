@@ -169,7 +169,7 @@ def create_boundary_geom(dem_band, dst_layer):
             *boundary[0,0], *boundary[-1,-1]))
     return True
 
-def create_info_geometries(dem_band, dst_ds):
+def create_info_geometries(dem_band, dst_ds, eval_str=None):
     """Create complete OGR info layer"""
     # Create the OGR layer
     dst_layer = gdal_utils.gdal_vect_layer.create(dst_ds, 'Bounds / info',
@@ -183,9 +183,15 @@ def create_info_geometries(dem_band, dst_ds):
         print('Error: Unable to create DEM boundary geometry', file=sys.stderr)
         return None
 
-    # Visualization of DEM 'NoDataValue' points
-    nodata_mask = numpy.isnan(dem_band.get_elevation(True))
-    if not create_geom_by_mask(dem_band, dst_layer, nodata_mask, 'NoDataValue: {0} at {1[0]},{1[1]}'):
+    if eval_str is None:
+        # Visualization of DEM 'NoDataValue' points
+        geom_mask = numpy.isnan(dem_band.get_elevation(True))
+        name_fmt = 'NoDataValue: {0} at {1[0]},{1[1]}'
+    else:
+        geom_mask = eval(eval_str, None, {"A": dem_band.get_elevation(True)})
+        name_fmt = 'Calc "%s": {0} at {1[0]},{1[1]}'%eval_str
+
+    if not create_geom_by_mask(dem_band, dst_layer, geom_mask, name_fmt):
         print('Warnig: Unable to create "NoDataValue" geometries', file=sys.stderr)
 
     return dst_layer
@@ -193,6 +199,7 @@ def create_info_geometries(dem_band, dst_ds):
 def main(argv):
     """Main entry"""
     truncate = True
+    eval_str = None
     src_filename = dst_filename = None
     while argv:
         if argv[0][0] == '-':
@@ -200,6 +207,9 @@ def main(argv):
                 return print_help()
             if argv[0] == '-a':
                 truncate = False
+            elif argv[0] == '--calc':
+                argv = argv[1:]
+                eval_str = argv[0]
             else:
                 return print_help('Unsupported option "%s"'%argv[0])
         else:
@@ -232,7 +242,7 @@ def main(argv):
             dst_ds.delete_layer(i)
 
     # Create all info geometries
-    if create_info_geometries(dem_band, dst_ds) is None:
+    if create_info_geometries(dem_band, dst_ds, eval_str) is None:
         return 1
 
     return 0
@@ -244,6 +254,11 @@ def print_help(err_msg=None):
     print('\tOptions:')
     print('\t-h\t- This screen')
     print('\t-a\t- Append to the existing OGR geometry')
+    print('\t--calc <eval-expt> - Create geometries from an eval() expression')
+    print('\t\tThe "A" is a numpy array with the DEM elevations, examples:')
+    print('\t\t  "A<1000"         -- Elevations under 1000m')
+    print('\t\t  "(A>10)&(A<100)" -- Elevations between 10 and 100m')
+    print('\t\t  "numpy.isnan(A)" -- The "NoDataValues" (same as default)')
     return 0 if err_msg is None else 255
 
 if __name__ == '__main__':
