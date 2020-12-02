@@ -97,29 +97,27 @@ def create_ring_by_mask(dst_layer, dem_band, mask):
         if (x_y == start_xy).all() and x_rots[0,0] == 1:
             return ring, start_xy, frame_mask
 
-def create_no_data_geom(dem_band, dst_layer):
-    """Add polygons around "NoDataValue" points"""
+def create_geom_by_mask(dem_band, dst_layer, geom_mask, name_fmt):
+    """Add polygons around all the masked pixels"""
     start = time.time()
 
     # Prepare the "expand mask" tool
-    nodata_mask = numpy.isnan(dem_band.get_elevation(True))
-    expand = expand_mask(nodata_mask.shape)
+    expand = expand_mask(geom_mask.shape)
 
     num_geometries = 0
     num_islands = 0
-    while nodata_mask.any():
+    while geom_mask.any():
         # Create ring geometry around some of the islands
-        ring, x_y, frame_mask = create_ring_by_mask(dst_layer, dem_band, nodata_mask)
+        ring, start_xy, frame_mask = create_ring_by_mask(dst_layer, dem_band, geom_mask)
         # Expand the mask till it fills this island
-        cur_mask = numpy.zeros_like(nodata_mask)
-        gdal_utils.write_arr(cur_mask, x_y, True)
-        cur_mask = expand.expand(cur_mask, nodata_mask)
-        nodata_mask ^= cur_mask
+        cur_mask = numpy.zeros_like(geom_mask)
+        gdal_utils.write_arr(cur_mask, start_xy, True)
+        cur_mask = expand.expand(cur_mask, geom_mask)
+        geom_mask ^= cur_mask
         assert ((frame_mask & cur_mask) == cur_mask).all(), 'The "frame_mask" ovelaps "cur_mask"'
 
+        area = numpy.count_nonzero(cur_mask)
         geom = dst_layer.create_feature_geometry(gdal_utils.wkbPolygon)
-        geom.set_field('Name', 'NoDataValue: %d at %d,%d'%(numpy.count_nonzero(cur_mask), *x_y))
-        geom.set_style_string(DEM_NODATA_FEATURE_STYLE)
         geom.add_geometry(ring)
 
         #
@@ -136,12 +134,15 @@ def create_no_data_geom(dem_band, dst_layer):
             mask = expand.expand(mask, cur_mask)
             cur_mask ^= mask
 
+            area -= numpy.count_nonzero(mask)
             num_islands += 1
 
+        geom.set_field('Name', name_fmt.format(area, start_xy))
+        geom.set_style_string(DEM_NODATA_FEATURE_STYLE)
         geom.create()
         num_geometries += 1
 
-    print('Created %d "NoDataValue" polygons, %d islands inside, %d sec'%(
+    print('Created %d polygons, %d islands inside, %d sec'%(
             num_geometries, num_islands, time.time() - start))
     return True
 
@@ -183,7 +184,8 @@ def create_info_geometries(dem_band, dst_ds):
         return None
 
     # Visualization of DEM 'NoDataValue' points
-    if not create_no_data_geom(dem_band, dst_layer):
+    nodata_mask = numpy.isnan(dem_band.get_elevation(True))
+    if not create_geom_by_mask(dem_band, dst_layer, nodata_mask, 'NoDataValue: {0} at {1[0]},{1[1]}'):
         print('Warnig: Unable to create "NoDataValue" geometries', file=sys.stderr)
 
     return dst_layer
