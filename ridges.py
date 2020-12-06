@@ -34,6 +34,22 @@ KEEP_SNAPSHOT = True
 RESUME_FROM_SNAPSHOT = 0    # Currently 0 to 2
 
 #
+# Internal data-types, mostly for keep/resume support
+#
+DIR_DIST_DTYPE = [
+        ('n_dir', NEIGHBOR_DIR_DTYPE),
+        ('dist', numpy.float),
+]
+TENTATIVE_DTYPE = [
+        ('x_y', (numpy.int32, (2,))),
+        ('alt', numpy.float),
+]
+RESULT_LINE_DTYPE = [
+        ('x_y', (numpy.int32, (2,))),
+        ('dist', numpy.float),
+]
+
+#
 # Generic tools
 #
 def sorted_arr_insert(arr, entry, key, end=None):
@@ -158,10 +174,7 @@ def trace_ridges(dem_band, valleys=False, boundary_val=None):
     # Neighbor directions and distance array
     # Initialize the points to be processed with 'pending' value.
     #
-    dir_arr = numpy.empty(elevations.shape, dtype=[
-            ('n_dir', NEIGHBOR_DIR_DTYPE),
-            ('dist', numpy.float),
-        ])
+    dir_arr = numpy.empty(elevations.shape, dtype=DIR_DIST_DTYPE)
     dir_arr['n_dir'] = NEIGHBOR_PENDING
     dir_arr['dist'] = numpy.nan
     # Here "select_mask" includes both boundary and "NoDataValue" points
@@ -174,18 +187,12 @@ def trace_ridges(dem_band, valleys=False, boundary_val=None):
     # Tentative point list (coord and altitude)
     # Initially contains the start point only
     #
-    tentative = numpy.array([(seed_xy, dem_band.get_elevation(seed_xy))], dtype=[
-            ('x_y', (numpy.int32, (2,))),
-            ('alt', numpy.float),
-    ])
+    tentative = numpy.array([(seed_xy, dem_band.get_elevation(seed_xy))], dtype=TENTATIVE_DTYPE)
 
     #
     # End-points of generated lines (coord and distance)
     #
-    result_lines = numpy.empty(0, dtype=[
-            ('x_y', (numpy.int32, (2,))),
-            ('dist', numpy.float),
-    ])
+    result_lines = numpy.empty(0, dtype=RESULT_LINE_DTYPE)
 
     distance = gdal_utils.geod_distance(dem_band) if 0 == DISTANCE_METHOD \
             else gdal_utils.tm_distance(dem_band) if 1 == DISTANCE_METHOD \
@@ -359,15 +366,18 @@ def combine_lines(result_lines, dir_arr, min_len=0):
         assert dist >= min_len, 'Short line in result_lines %d/%d'%(dist, min_len)
 
         print('Generating line starting at point %s total length %d'%(x_y, dist))
-        pline = []
+        pline = numpy.empty((0, *x_y.shape), dtype=x_y.dtype)
         # Trace route
-        while x_y is not None:
-            pline.append(x_y)
+        start_xy = x_y
+        while True:
+            pline = numpy.append(pline, [x_y], axis=0)
             n_dir = gdal_utils.read_arr(dir_arr['n_dir'], x_y)
+            if neighbor_is_invalid(n_dir):
+                break
             # Stop other lines from overlapping that one
             gdal_utils.write_arr(dir_arr['n_dir'], x_y, NEIGHBOR_STOP)
-            x_y = None if neighbor_is_invalid(n_dir) else neighbor_xy(x_y, n_dir)
-        polylines.append((dist, pline))
+            x_y = neighbor_xy(x_y, n_dir)
+        polylines.append({'dist': dist, 'x_y': start_xy, 'line': pline})
         if not result_lines.size:
             break
 
@@ -459,14 +469,8 @@ def keep_result_lines_dir_arr(prefix, result_lines, dir_arr):
 def restore_result_lines_dir_arr(prefix):
     """Load snapshots of the 'result_lines' and 'dir_arr' arrays"""
     return restore_arrays(prefix, {
-            'result_lines': [
-                    ('x_y', (numpy.int32, (2,))),
-                    ('dist', numpy.float),
-            ],
-            'dir_arr': [
-                    ('n_dir', NEIGHBOR_DIR_DTYPE),
-                    ('dist', numpy.float),
-            ],
+            'result_lines': RESULT_LINE_DTYPE,
+            'dir_arr': DIR_DIST_DTYPE,
         })
 
 def main(argv):
@@ -564,7 +568,8 @@ def main(argv):
         return 2
 
     duration = time.time() - start
-    print('Created total %d polylines, first %d, last %d points, %d sec'%(len(polylines), len(polylines[0]), len(polylines[-1]), duration))
+    print('Created total %d polylines, first %d, last %d points, %d sec'%(len(polylines),
+            len(polylines[0]['line']), len(polylines[-1]['line']), duration))
 
     if dst_ds:
         start = time.time()
@@ -583,11 +588,13 @@ def main(argv):
         # Add fields
         dst_layer.create_field('Name', True)    # KML <name>
 
-        for dist, pline in polylines:
+        for entry in polylines:
             geom = dst_layer.create_feature_geometry(gdal_utils.wkbLineString)
+            dist = entry['dist']
             geom.set_field('Name', '%dm'%dist if dist < 10000 else '%dkm'%round(dist/1000))
             geom.set_style_string(VECTOR_FEATURE_STYLE(valleys))
-            for x_y in reversed(pline):
+            # Reverse the line to match the tracing direction
+            for x_y in entry['line'][::-1]:
                 geom.add_point(*dem_band.xy2lonlatalt(x_y))
             geom.create()
         duration = time.time() - start
