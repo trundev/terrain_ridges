@@ -15,6 +15,7 @@ NEIGHBOR_PENDING = 9
 NEIGHBOR_SEED = 10
 NEIGHBOR_STOP = 11
 NEIGHBOR_INVALID = 12
+NEIGHBOR_BOUNDARY = 13
 NEIGHBOR_DIR_DTYPE = numpy.int8
 VALID_NEIGHBOR_DIRS = numpy.array(VALID_NEIGHBOR_DIRS, dtype=NEIGHBOR_DIR_DTYPE)
 
@@ -86,12 +87,16 @@ def process_neighbors(dem_band, distance, dir_arr, x_y):
     # The lines can only pass-thru inner DEM pixels, the boundary ones do split
     stop_mask = ~mask.all(-1)
     # Filter already processed pixels
-    mask = gdal_utils.read_arr(dir_arr['n_dir'], n_xy) == NEIGHBOR_PENDING
+    neighs = gdal_utils.read_arr(dir_arr['n_dir'], n_xy)
+    mask = neighs == NEIGHBOR_PENDING
     if not mask.any():
         return None, None
     if not mask.all():
         n_xy = n_xy[mask]
         n_dir = n_dir[mask]
+        mask = neighs == NEIGHBOR_BOUNDARY
+        if mask.any():
+            stop_mask |= mask.any(-1)
     # Process selected pixels
     n_dir = neighbor_flip(n_dir)
     n_dist = distance.get_distance(numpy.broadcast_to(x_y, n_xy.shape), n_xy)
@@ -114,37 +119,37 @@ def reduced_distance(dir_arr, x_y):
             return start_dist - dist
         x_y = neighbor_xy(x_y, n_dir)
 
-def select_seed(elevations, valleys, mask=None):
+def select_seed(elevations, valleys, mask):
     """Select a point to start ridge/valley tracing"""
-    if mask is None:
-        mask = numpy.isnan(elevations)
-
     # Keep the original mask if shrinking turns to disaster
-    orig_mask = mask.copy()
+    ma_mask = mask.copy()
 
     # Shrink/mask boundaries to select the seed away from edges
     if elevations.shape[0] > 2 * SEED_INFLATE:
-        mask[:SEED_INFLATE,:] = True
-        mask[-SEED_INFLATE:,:] = True
+        ma_mask[:SEED_INFLATE,:] = True
+        ma_mask[-SEED_INFLATE:,:] = True
     if elevations.shape[1] > 2 * SEED_INFLATE:
-        mask[:,:SEED_INFLATE] = True
-        mask[:,-SEED_INFLATE:] = True
+        ma_mask[:,:SEED_INFLATE] = True
+        ma_mask[:,-SEED_INFLATE:] = True
 
     # Revert the mask if we have masked everything
-    if mask.all():
-        mask = orig_mask
+    if ma_mask.all():
+        ma_mask = mask
 
     # Use MaskedArray array to find min/max
-    elevations = numpy.ma.array(elevations, mask=mask)
+    elevations = numpy.ma.array(elevations, mask=ma_mask)
     flat_idx = elevations.argmin() if valleys else elevations.argmax()
     seed_xy = numpy.unravel_index(flat_idx, elevations.shape)
     return numpy.array(seed_xy, dtype=numpy.int32)
 
-def trace_ridges(dem_band, valleys=False):
+def trace_ridges(dem_band, valleys=False, boundary_val=None):
     """Generate terrain ridges or valleys"""
     # Start at the max/min altitude (first one, away from edges)
     elevations = dem_band.get_elevation(True)
-    seed_xy = select_seed(elevations, valleys)
+    select_mask = numpy.isnan(elevations)
+    if boundary_val is not None:
+        select_mask |= elevations == boundary_val
+    seed_xy = select_seed(elevations, valleys, select_mask)
     print('Tracing', 'valleys' if valleys else 'ridges',
           'from seed point', seed_xy,
           ', altitude', dem_band.get_elevation(seed_xy))
@@ -159,6 +164,8 @@ def trace_ridges(dem_band, valleys=False):
         ])
     dir_arr['n_dir'] = NEIGHBOR_PENDING
     dir_arr['dist'] = numpy.nan
+    # Here "select_mask" includes both boundary and "NoDataValue" points
+    dir_arr['n_dir'][select_mask] = NEIGHBOR_BOUNDARY
     dir_arr['n_dir'][numpy.isnan(elevations)] = NEIGHBOR_INVALID
     gdal_utils.write_arr(dir_arr, seed_xy, (NEIGHBOR_SEED, 0.))
     del elevations
@@ -465,6 +472,7 @@ def restore_result_lines_dir_arr(prefix):
 def main(argv):
     """Main entry"""
     valleys = False
+    boundary_val = None
     truncate = True
     src_filename = dst_filename = None
     while argv:
@@ -473,6 +481,9 @@ def main(argv):
                 return print_help()
             if argv[0] == '-valley':
                 valleys = True
+            elif argv[0] == '-boundary_val':
+                argv = argv[1:]
+                boundary_val = float(argv[0])
             else:
                 return print_help('Unsupported option "%s"'%argv[0])
         else:
@@ -507,7 +518,7 @@ def main(argv):
         start = time.time()
 
         # Actual trace
-        result_lines, dir_arr = trace_ridges(dem_band, valleys)
+        result_lines, dir_arr = trace_ridges(dem_band, valleys, boundary_val)
         if result_lines is None:
             print('Error: Failed to trace ridges', file=sys.stderr)
             return 2
@@ -591,6 +602,7 @@ def print_help(err_msg=None):
     print('\tOptions:')
     print('\t-h\t- This screen')
     print('\t-valley\t- Generate valleys, instead of ridges')
+    print('\t-boundary_val <ele> - Treat the neighbors next to <ele> as boundary')
     return 0 if err_msg is None else 255
 
 if __name__ == '__main__':
