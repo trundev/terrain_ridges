@@ -113,7 +113,7 @@ def select_seed(elevations, valleys, mask):
     seed_xy = numpy.unravel_index(flat_idx, elevations.shape)
     return numpy.array(seed_xy, dtype=numpy.int32)
 
-def process_neighbors(dem_band, distance, dir_arr, x_y):
+def process_neighbors(dem_band, dir_arr, x_y):
     """Process the valid and pending neighbor points and return a list to be put to tentative"""
     x_y = x_y[...,numpy.newaxis,:]
     n_xy = neighbor_xy(x_y, VALID_NEIGHBOR_DIRS)
@@ -126,10 +126,10 @@ def process_neighbors(dem_band, distance, dir_arr, x_y):
     # The lines can only pass-thru inner DEM pixels, the boundary ones do split
     stop_mask = ~mask.all(-1)
     # Filter already processed pixels
-    neighs = gdal_utils.read_arr(dir_arr['n_dir'], n_xy)
+    neighs = gdal_utils.read_arr(dir_arr, n_xy)
     mask = neighs == NEIGHBOR_PENDING
     if not mask.any():
-        return None, None
+        return None
     if not mask.all():
         n_xy = n_xy[mask]
         n_dir = n_dir[mask]
@@ -138,16 +138,12 @@ def process_neighbors(dem_band, distance, dir_arr, x_y):
             stop_mask |= mask.any(-1)
     # Process selected pixels
     n_dir = neighbor_flip(n_dir)
-    n_dist = distance.get_distance(numpy.broadcast_to(x_y, n_xy.shape), n_xy)
-    n_dist += gdal_utils.read_arr(dir_arr['dist'], x_y)
     # Put 'stop' markers on the successors of the masked points
     # This is to split lines at the boundary pixels
     if stop_mask.any():
         n_dir[stop_mask] = NEIGHBOR_STOP
-        n_dist[stop_mask] = 0.
-    gdal_utils.write_arr(dir_arr['n_dir'], n_xy, n_dir)
-    gdal_utils.write_arr(dir_arr['dist'], n_xy, n_dist)
-    return n_xy, stop_mask
+    gdal_utils.write_arr(dir_arr, n_xy, n_dir)
+    return n_xy
 
 def trace_ridges(dem_band, valleys=False, boundary_val=None):
     """Generate terrain ridges or valleys"""
@@ -162,17 +158,15 @@ def trace_ridges(dem_band, valleys=False, boundary_val=None):
           ', altitude', dem_band.get_elevation(seed_xy))
 
     #
-    # Neighbor directions and distance array
+    # Neighbor directions
     # Initialize the points to be processed with 'pending' value.
     #
-    dir_arr = numpy.empty(elevations.shape, dtype=DIR_DIST_DTYPE)
-    dir_arr['n_dir'] = NEIGHBOR_PENDING
-    dir_arr['dist'] = numpy.nan
+    dir_arr = numpy.full(elevations.shape, NEIGHBOR_PENDING, dtype=NEIGHBOR_DIR_DTYPE)
     # Here "select_mask" includes both boundary and "NoDataValue" points
-    dir_arr['n_dir'][select_mask] = NEIGHBOR_BOUNDARY
-    dir_arr['n_dir'][numpy.isnan(elevations)] = NEIGHBOR_INVALID
-    gdal_utils.write_arr(dir_arr, seed_xy, (NEIGHBOR_SEED, 0.))
-    del elevations
+    dir_arr[select_mask] = NEIGHBOR_BOUNDARY
+    dir_arr[numpy.isnan(elevations)] = NEIGHBOR_INVALID
+    gdal_utils.write_arr(dir_arr, seed_xy, NEIGHBOR_SEED)
+    del elevations, select_mask
 
     #
     # Tentative point list (coord and altitude)
@@ -180,20 +174,12 @@ def trace_ridges(dem_band, valleys=False, boundary_val=None):
     #
     tentative = numpy.array([(seed_xy, dem_band.get_elevation(seed_xy))], dtype=TENTATIVE_DTYPE)
 
-    #
-    # End-points of generated lines (coord and distance)
-    #
-    result_lines = numpy.empty(0, dtype=RESULT_LINE_DTYPE)
-
-    distance = gdal_utils.geod_distance(dem_band) if 0 == DISTANCE_METHOD \
-            else gdal_utils.tm_distance(dem_band) if 1 == DISTANCE_METHOD \
-            else gdal_utils.draft_distance(dem_band)
-    progress_next = 0
+    progress_idx = 0
     while tentative.size:
         x_y, _ = tentative[-1]
         tentative = tentative[:-1]
         #print('    Processing point %s alt %d, dist %d'%(x_y, _, gdal_utils.read_arr(dir_arr['dist'], x_y)))
-        n_xy, stop_mask = process_neighbors(dem_band, distance, dir_arr, x_y)
+        n_xy = process_neighbors(dem_band, dir_arr, x_y)
         if n_xy is not None:
             alts = dem_band.get_elevation(n_xy)
             assert not numpy.isnan(alts).any(), '"NoDataValue" point(s) %s are marked for processing'%n_xy[numpy.isnan(alts)]
@@ -210,38 +196,99 @@ def trace_ridges(dem_band, valleys=False, boundary_val=None):
             # effect for the order of 'n_xy'. This is the same as if VALID_NEIGHBOR_DIRS is flipped.
             tentative = sorted_arr_insert(tentative, tentr[::-1], 'alt')
 
-        if n_xy is None or stop_mask.any():
-            dist = gdal_utils.read_arr(dir_arr['dist'], x_y)
-            #print('  Line finished at point %s total length %d'%(x_y, dist))
-            # Keep this end-point in 'result_lines', but if it's at least one pixel
-            if dist > 0:
-                result_lines = sorted_arr_insert(result_lines,
-                        numpy.array((x_y, dist), dtype=result_lines.dtype), 'dist')
-                #
-                # Progress, each 1000-th line
-                #
-                if progress_next <= result_lines.shape[0]:
-                    print('  Tentatives', tentative.shape[0], 'completed', result_lines.shape[0],
-                            'max/mid/min len %d/%d/%d'%(result_lines[-1]['dist'], result_lines[result_lines.shape[0] // 2]['dist'], result_lines[0]['dist']))
-                    progress_next += 1000
+        # After the 'tentative' is exhausted, there still can be islands of valid elevations,
+        # that were not processed, because of the surrounding invalid ones
+        elif not tentative.size:
+            mask = dir_arr == NEIGHBOR_PENDING
+            if mask.any():
+                # Restart at the highest/lowest unprocessed point
+                seed_xy = select_seed(dem_band.get_elevation(True), valleys, numpy.logical_not(mask))
+                alt = dem_band.get_elevation(seed_xy)
+                print('Restart tracing from seed point', seed_xy, ', altitude', alt)
+                gdal_utils.write_arr(dir_arr, seed_xy, NEIGHBOR_SEED)
+                tentative = numpy.array([(seed_xy, alt)], dtype=tentative.dtype)
 
-            # After the 'tentative' is exhausted, there still can be islands of valid elevations,
-            # that were not processed, because of the surrounding invalid ones
-            if not tentative.size:
-                mask = dir_arr['n_dir'] == NEIGHBOR_PENDING
-                if mask.any():
-                    # Restart at the highest/lowest unprocessed point
-                    seed_xy = select_seed(dem_band.get_elevation(True), valleys, numpy.logical_not(mask))
-                    alt = dem_band.get_elevation(seed_xy)
-                    print('Restart tracing from seed point', seed_xy, ', altitude', alt)
-                    gdal_utils.write_arr(dir_arr, seed_xy, (NEIGHBOR_SEED, 0.))
-                    tentative = numpy.array([(seed_xy, alt)], dtype=tentative.dtype)
+        #
+        # Progress, each 10000-th line
+        #
+        if progress_idx % 10000 == 0:
+            alts = tentative['alt']
+            print('  Process step %d, tentatives %d, alt max/min %d/%d, remaining %d points'%(progress_idx,
+                    tentative.shape[0], alts.max(), alts.min(),
+                    numpy.count_nonzero(dir_arr == NEIGHBOR_PENDING)))
+        progress_idx += 1
 
-    return result_lines, dir_arr
+    return dir_arr
 
 #
 # Second stage - flip longest line(s)
 #
+def get_mgrid(shape):
+    """Create a grid of self-pointing coordinates"""
+    mgrid = numpy.mgrid[:shape[0], :shape[1]]
+    # The coordinates must be in the last dimension
+    return numpy.moveaxis(mgrid, 0, -1)
+
+def calculate_dist_arr(distance, dir_arr):
+    """Generate 'dist_arr' from the 'dir_arr'"""
+    # Use a helper array, where each element points to it-self
+    mgrid_xy = get_mgrid(dir_arr.shape)
+    mgrid_n_xy = neighbor_xy_safe(mgrid_xy, dir_arr)
+    dist_arr = distance.get_distance(mgrid_xy, mgrid_n_xy)
+    del mgrid_xy
+    # Keep NaN-s where there is no neighbors (there are 0-s, because of neighbor_xy_safe)
+    mask = neighbor_is_invalid(dir_arr)
+    mask &= (dir_arr != NEIGHBOR_SEED) & (dir_arr != NEIGHBOR_STOP)
+    dist_arr[mask] = numpy.nan
+
+    #
+    # Restore distances by repeating the tracing steps (in parallel)
+    # Start from all 'seed'-s and 'stop'-s
+    #
+    mask = (dir_arr == NEIGHBOR_SEED) | (dir_arr == NEIGHBOR_STOP)
+    print('Calculating distances to %d seeds'%(numpy.count_nonzero(mask)))
+    assert (dist_arr[mask] == 0.).all(), 'Start with non-zero distance'
+    # Select the neighbors pointing to the masked pixels by using 'mgrid_n_xy'
+    # The initial mask must be removed as it will pass thru - its 'mgrid_n_xy' points to them-self
+    mask = gdal_utils.read_arr(mask, mgrid_n_xy) ^ mask
+    progress_idx = 0
+    while mask.any():
+        # Adjust selected pixels with distances from their neighbors
+        dist_arr[mask] += gdal_utils.read_arr(dist_arr, mgrid_n_xy[mask])
+        #
+        # Progress, each 100-th step
+        #
+        if progress_idx % 100 == 0:
+            masked_dist = dist_arr[mask]
+            print('  Process step %d, perimeter %d, dist max/min %.1f/%.1f'%(progress_idx,
+                    masked_dist.size, masked_dist.max(), masked_dist.min()))
+            del masked_dist
+        progress_idx += 1
+
+        # Select the neighbors pointing to current mask
+        mask = gdal_utils.read_arr(mask, mgrid_n_xy)
+
+    return dist_arr
+
+def calculate_result_lines(dir_arr, dist_arr):
+    """Generate 'result_lines' from the 'dir_arr' and 'dist_arr'"""
+    mgrid_n_xy = neighbor_xy_safe(get_mgrid(dir_arr.shape), dir_arr)
+    # Isolate the 'leaf' pixels and create the 'result_lines' out of them
+    all_leafs = numpy.ones(dir_arr.shape, dtype=bool)
+    gdal_utils.write_arr(all_leafs, mgrid_n_xy, False)
+    x_y = numpy.array(numpy.nonzero(all_leafs)).T
+    result_lines = numpy.empty(x_y.shape[:-1], dtype=[
+            ('x_y', (numpy.int32, (2,))),
+            ('dist', numpy.float),
+    ])
+    result_lines['x_y'] = x_y
+    result_lines['dist'] = gdal_utils.read_arr(dist_arr, x_y)
+
+    # Sort the 'result_lines' by 'dist' (ascending sort)
+    argsort = numpy.argsort(result_lines['dist'])
+    result_lines = numpy.take(result_lines, argsort)
+    return result_lines
+
 def flip_line(new_dir_arr, dir_arr, x_y):
     """Flip all 'n_dir'-s along a line, invert the distances"""
     prev_dir, start_dist = gdal_utils.read_arr(dir_arr, x_y)
@@ -531,18 +578,18 @@ def main(argv):
         start = time.time()
 
         # Actual trace
-        result_lines, dir_arr = trace_ridges(dem_band, valleys, boundary_val)
-        if result_lines is None:
+        dir_arr = trace_ridges(dem_band, valleys, boundary_val)
+        if dir_arr is None:
             print('Error: Failed to trace ridges', file=sys.stderr)
             return 2
 
         duration = time.time() - start
-        print('Traced total %d lines, max length %d, %d sec'%(result_lines.shape[0], result_lines[-1]['dist'], duration))
+        print('Traced through %d/%d points, %d sec'%(numpy.count_nonzero(~neighbor_is_invalid(dir_arr)), dir_arr.size, duration))
 
         if KEEP_SNAPSHOT:
-            keep_result_lines_dir_arr(src_filename + '-1-', result_lines, dir_arr)
+            keep_arrays(src_filename + '-1-', {'dir_arr': (dir_arr, None),})
     elif RESUME_FROM_SNAPSHOT == 1:
-        result_lines, dir_arr = restore_result_lines_dir_arr(src_filename + '-1-')
+        dir_arr, = restore_arrays(src_filename + '-1-', {'dir_arr': (None, ),})
 
     #
     # Flip the longest lines ending in each 'seed' and recalculate the 'dist' members
@@ -552,26 +599,43 @@ def main(argv):
 
         start = time.time()
 
+        # flip_seed_lines() needs the 'dist' member of 'dir_dist_arr' and 'result_lines'
+        distance = gdal_utils.geod_distance(dem_band) if 0 == DISTANCE_METHOD \
+                else gdal_utils.tm_distance(dem_band) if 1 == DISTANCE_METHOD \
+                else gdal_utils.draft_distance(dem_band)
+        dist_arr = calculate_dist_arr(distance, dir_arr)
+        result_lines = calculate_result_lines(dir_arr, dist_arr)
+
+        # Combine dir_arr and dist_arr for convenience in further processing
+        dir_dist_arr = numpy.empty(dir_arr.shape, dtype=[
+                ('n_dir', NEIGHBOR_DIR_DTYPE),
+                ('dist', numpy.float),
+            ])
+        dir_dist_arr['n_dir'] = dir_arr
+        dir_dist_arr['dist'] = dist_arr
+        del dir_arr, dist_arr
+
         # Actual flip
-        dir_arr, result_lines = flip_seed_lines(dir_arr, result_lines)
-        if dir_arr is None:
+        dir_dist_arr, result_lines = flip_seed_lines(dir_dist_arr, result_lines)
+        if dir_dist_arr is None:
             print('Error: Failed to flip longest lines', file=sys.stderr)
             return 2
 
         duration = time.time() - start
-        print('Flip & merge longest lines, %d sec'%(duration))
+        print('Flip & merge longest lines, total %d lines, max/min length %d/%d, %d sec'%(
+                result_lines.shape[0], result_lines[-1]['dist'], result_lines[0]['dist'], duration))
 
         if KEEP_SNAPSHOT:
-            keep_result_lines_dir_arr(src_filename + '-2-', result_lines, dir_arr)
+            keep_result_lines_dir_arr(src_filename + '-2-', result_lines, dir_dist_arr)
     elif RESUME_FROM_SNAPSHOT == 2:
-        result_lines, dir_arr = restore_result_lines_dir_arr(src_filename + '-2-')
+        result_lines, dir_dist_arr = restore_result_lines_dir_arr(src_filename + '-2-')
 
     #
     # Combine traced lines, longer than one-tenth of the longest one
     #
     start = time.time()
 
-    polylines = combine_lines(result_lines, dir_arr, result_lines[-1]['dist'] / 10)
+    polylines = combine_lines(result_lines, dir_dist_arr, result_lines[-1]['dist'] / 10)
     if not polylines:
         print('Error: Failed to combine lines', file=sys.stderr)
         return 2
