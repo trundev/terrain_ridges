@@ -63,9 +63,6 @@ def sorted_arr_insert(arr, entry, key, end=None):
     idx = numpy.searchsorted(arr[:end][key], entry[key])
     return numpy.insert(arr, idx, entry)
 
-#
-# Main processing
-#
 def neighbor_xy(x_y, neighbor_dir):
     """Get the coordinates of a neighbor pixel"""
     if neighbor_dir.ndim < 2:       # Performance optimization
@@ -89,6 +86,32 @@ def neighbor_xy_safe(x_y, neighbor_dir):
 def neighbor_is_invalid(neighbor_dir):
     """Return mask of where the neighbor directions are invalid"""
     return neighbor_dir > NEIGHBOR_LAST_VALID
+
+#
+# First stage - trace ridges
+#
+def select_seed(elevations, valleys, mask):
+    """Select a point to start ridge/valley tracing"""
+    # Keep the original mask if shrinking turns to disaster
+    ma_mask = mask.copy()
+
+    # Shrink/mask boundaries to select the seed away from edges
+    if elevations.shape[0] > 2 * SEED_INFLATE:
+        ma_mask[:SEED_INFLATE,:] = True
+        ma_mask[-SEED_INFLATE:,:] = True
+    if elevations.shape[1] > 2 * SEED_INFLATE:
+        ma_mask[:,:SEED_INFLATE] = True
+        ma_mask[:,-SEED_INFLATE:] = True
+
+    # Revert the mask if we have masked everything
+    if ma_mask.all():
+        ma_mask = mask
+
+    # Use MaskedArray array to find min/max
+    elevations = numpy.ma.array(elevations, mask=ma_mask)
+    flat_idx = elevations.argmin() if valleys else elevations.argmax()
+    seed_xy = numpy.unravel_index(flat_idx, elevations.shape)
+    return numpy.array(seed_xy, dtype=numpy.int32)
 
 def process_neighbors(dem_band, distance, dir_arr, x_y):
     """Process the valid and pending neighbor points and return a list to be put to tentative"""
@@ -125,38 +148,6 @@ def process_neighbors(dem_band, distance, dir_arr, x_y):
     gdal_utils.write_arr(dir_arr['n_dir'], n_xy, n_dir)
     gdal_utils.write_arr(dir_arr['dist'], n_xy, n_dist)
     return n_xy, stop_mask
-
-def reduced_distance(dir_arr, x_y):
-    """Calculate trace distance upto the next NEIGHBOR_STOP"""
-    start_dist = gdal_utils.read_arr(dir_arr['dist'], x_y)
-    while True:
-        n_dir, dist = gdal_utils.read_arr(dir_arr, x_y)
-        if neighbor_is_invalid(n_dir):
-            return start_dist - dist
-        x_y = neighbor_xy(x_y, n_dir)
-
-def select_seed(elevations, valleys, mask):
-    """Select a point to start ridge/valley tracing"""
-    # Keep the original mask if shrinking turns to disaster
-    ma_mask = mask.copy()
-
-    # Shrink/mask boundaries to select the seed away from edges
-    if elevations.shape[0] > 2 * SEED_INFLATE:
-        ma_mask[:SEED_INFLATE,:] = True
-        ma_mask[-SEED_INFLATE:,:] = True
-    if elevations.shape[1] > 2 * SEED_INFLATE:
-        ma_mask[:,:SEED_INFLATE] = True
-        ma_mask[:,-SEED_INFLATE:] = True
-
-    # Revert the mask if we have masked everything
-    if ma_mask.all():
-        ma_mask = mask
-
-    # Use MaskedArray array to find min/max
-    elevations = numpy.ma.array(elevations, mask=ma_mask)
-    flat_idx = elevations.argmin() if valleys else elevations.argmax()
-    seed_xy = numpy.unravel_index(flat_idx, elevations.shape)
-    return numpy.array(seed_xy, dtype=numpy.int32)
 
 def trace_ridges(dem_band, valleys=False, boundary_val=None):
     """Generate terrain ridges or valleys"""
@@ -248,6 +239,9 @@ def trace_ridges(dem_band, valleys=False, boundary_val=None):
 
     return result_lines, dir_arr
 
+#
+# Second stage - flip longest line(s)
+#
 def flip_line(new_dir_arr, dir_arr, x_y):
     """Flip all 'n_dir'-s along a line, invert the distances"""
     prev_dir, start_dist = gdal_utils.read_arr(dir_arr, x_y)
@@ -347,6 +341,18 @@ def flip_seed_lines(dir_arr, result_lines):
             progress_next += result_lines.shape[0] // 10
 
     return new_dir_arr, new_result_lines
+
+#
+# Third stage - combine lines
+#
+def reduced_distance(dir_arr, x_y):
+    """Calculate trace distance upto the next NEIGHBOR_STOP"""
+    start_dist = gdal_utils.read_arr(dir_arr['dist'], x_y)
+    while True:
+        n_dir, dist = gdal_utils.read_arr(dir_arr, x_y)
+        if neighbor_is_invalid(n_dir):
+            return start_dist - dist
+        x_y = neighbor_xy(x_y, n_dir)
 
 def combine_lines(result_lines, dir_arr, min_len=0):
     """Create polylines from previously generated ridges or valleys"""
@@ -473,6 +479,9 @@ def restore_result_lines_dir_arr(prefix):
             'dir_arr': DIR_DIST_DTYPE,
         })
 
+#
+# Main processing
+#
 def main(argv):
     """Main entry"""
     valleys = False
