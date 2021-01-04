@@ -32,7 +32,7 @@ env:
   DEF_GDALWARP_OPTIONS: "-te 21.5 39.0 22.0 39.5" # SE quarter of N39E021.hgt (600x600)
   # GDAL prebuilt package from https://gisinternals.com/release.php,
   # will add ".zip",  "-libs.zip" and "-src.zip"
-  GDAL_URL_PREFIX: "http://download.gisinternals.com/sdk/downloads/release-1911-x64-gdal-3-2-0-mapserver-7-6-1"
+  GDAL_URL_PREFIX: "http://download.gisinternals.com/sdk/downloads/release-1928-x64-gdal-3-2-1-mapserver-7-6-2"
 
 jobs:
   generate:
@@ -91,7 +91,7 @@ jobs:
         }
         $GDAL_BASE=Get-Item("GDAL")
 
-        $INCLUDE="$GDAL_BASE/include;$GDAL_BASE/gdal/gcore;$GDAL_BASE/gdal/port;$GDAL_BASE/gdal/gnm"
+        $INCLUDE="$GDAL_BASE/include;$GDAL_BASE/src/gdal-3-2-vc16x64/gdal/gcore;$GDAL_BASE/src/gdal-3-2-vc16x64/gdal/port;$GDAL_BASE/src/gdal-3-2-vc16x64/gdal/gnm"
         echo "INCLUDE=$INCLUDE" >> ${env:GITHUB_ENV}
         echo "INCLUDE set to $INCLUDE"
 
@@ -103,7 +103,7 @@ jobs:
         echo "GDAL_DRIVER_PATH=$GDAL_DRIVER_PATH" >> ${env:GITHUB_ENV}
         echo "GDAL_DRIVER_PATH set to $GDAL_DRIVER_PATH"
 
-        $PROJ_LIB="$GDAL_BASE/bin/proj6/share"
+        $PROJ_LIB="$GDAL_BASE/bin/proj7/share"
         echo "PROJ_LIB=$PROJ_LIB" >> ${env:GITHUB_ENV}
         echo "PROJ_LIB set to $PROJ_LIB"
 
@@ -116,12 +116,6 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         if (Test-Path requirements.txt) {
-          pip install -r requirements.txt
-          if ($LASTEXITCODE) {exit $LASTEXITCODE}
-
-          echo "***"
-          echo "Workaround for missing osgeo.gdal_array wrapper (.pyd)"
-          pip uninstall -y gdal
           pip install -r requirements.txt
         } else {
           pip install numpy gdal pyproj
@@ -216,4 +210,4 @@ jobs:
 
     - name: Validate result
       if: env.REF_NAME
-      run: git diff ${{ env.DST_NAME }} ${{ env.REF_NAME }}
+      run: git diff --no-index ${{ env.DST_NAME }} ${{ env.REF_NAME }}

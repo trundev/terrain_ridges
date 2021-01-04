@@ -1,9 +1,6 @@
 # Notes:
-# * GDAL==3.2.0 is currently supported by "release-1911-x64-gdal-3-2-0-mapserver-7-6-1",
+# * GDAL==3.2.1 is currently supported by "release-1928-x64-gdal-3-2-1-mapserver-7-6-2",
 #   check https://gisinternals.com/release.php
-# * After the very first install, the gdal_merge.py does not work, because of missing
-#   osgeo.gdal_array wrapper (_gdal_array.cp37-win_amd64.pyd). 
-#   Workaround: Reinstall GDAL
-GDAL==3.2.0
+GDAL==3.2.1
 numpy
 pyproj
