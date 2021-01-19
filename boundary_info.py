@@ -3,9 +3,13 @@ import sys
 import time
 import numpy
 import gdal_utils
+import ridges
 
 DEM_BOUNDARY_FEATURE_STYLE = 'PEN(c:#208020,w:1px);BRUSH(fc:#10801020)'
 DEM_NODATA_FEATURE_STYLE = 'PEN(c:#802020,w:1px);BRUSH(fc:#80101080)'
+DEM_LEAF_FEATURE_STYLE = 'PEN(c:#208020,w:1px);BRUSH(fc:#10801080)'
+DEM_SEED_FEATURE_STYLE = 'PEN(c:#C0C010,w:1px);BRUSH(fc:#C0C01080)'
+DEM_BSEED_FEATURE_STYLE = 'PEN(c:#808020,w:1px);BRUSH(fc:#80801080)'
 
 def get_mgrid(org_xy, size_xy, full=False):
     """Create a 2x2 grid around a boundary, or a full grid"""
@@ -97,7 +101,7 @@ def create_ring_by_mask(dst_layer, dem_band, mask):
         if (x_y == start_xy).all() and x_rots[0,0] == 1:
             return ring, start_xy, frame_mask
 
-def create_geom_by_mask(dem_band, dst_layer, geom_mask, name_fmt):
+def create_geom_by_mask(dem_band, dst_layer, geom_mask, name_fmt, style):
     """Add polygons around all the masked pixels"""
     start = time.time()
 
@@ -138,7 +142,7 @@ def create_geom_by_mask(dem_band, dst_layer, geom_mask, name_fmt):
             num_islands += 1
 
         geom.set_field('Name', name_fmt.format(area, start_xy))
-        geom.set_style_string(DEM_NODATA_FEATURE_STYLE)
+        geom.set_style_string(style)
         geom.create()
         num_geometries += 1
 
@@ -148,8 +152,6 @@ def create_geom_by_mask(dem_band, dst_layer, geom_mask, name_fmt):
 
 def create_boundary_geom(dem_band, dst_layer):
     """Create polygon abound DEM boundary"""
-    dst_layer.create_field('Name', True)    # KML <name>
-
     geom = dst_layer.create_feature_geometry(gdal_utils.wkbPolygon)
     geom.set_field('Name', 'DEM boundary')
     geom.set_style_string(DEM_BOUNDARY_FEATURE_STYLE)
@@ -178,6 +180,8 @@ def create_info_geometries(dem_band, dst_ds, eval_str=None):
         print('Error: Unable to create layer', file=sys.stderr)
         return None
 
+    dst_layer.create_field('Name', gdal_utils.OFTString)    # KML <name>
+
     # Visualization of DEM boundaries
     if not create_boundary_geom(dem_band, dst_layer):
         print('Error: Unable to create DEM boundary geometry', file=sys.stderr)
@@ -191,8 +195,62 @@ def create_info_geometries(dem_band, dst_ds, eval_str=None):
         geom_mask = eval(eval_str, None, {"A": dem_band.get_elevation(True)})
         name_fmt = 'Calc "%s": {0} at {1[0]},{1[1]}'%eval_str
 
-    if not create_geom_by_mask(dem_band, dst_layer, geom_mask, name_fmt):
+    if not create_geom_by_mask(dem_band, dst_layer, geom_mask, name_fmt, DEM_NODATA_FEATURE_STYLE):
         print('Warnig: Unable to create "NoDataValue" geometries', file=sys.stderr)
+
+    return dst_layer
+
+def create_dir_arr_geometries(dem_band, dir_arr, dst_ds):
+    """Create 'dir_arr' analysis OGR info layer"""
+    #
+    # Create the "Seeds" OGR layer
+    #
+    dst_layer = gdal_utils.gdal_vect_layer.create(dst_ds, 'dir_arr / Seeds',
+            srs=dem_band.get_spatial_ref(), geom_type=gdal_utils.wkbPolygon)
+    if dst_layer is None:
+        print('Error: Unable to create layer', file=sys.stderr)
+        return None
+
+    dst_layer.create_field('Name', gdal_utils.OFTString)    # KML <name>
+
+    # Helper array, where each pixel contains the coordinates of its neighbor
+    mgrid_n_xy = ridges.neighbor_xy_safe(ridges.get_mgrid(dir_arr.shape), dir_arr)
+
+    # Isolate "seed"/"stop" pixels
+    geom_mask = (dir_arr == ridges.NEIGHBOR_SEED) | (dir_arr == ridges.NEIGHBOR_STOP)
+    bare_mask = geom_mask.copy()
+    gdal_utils.write_arr(bare_mask, mgrid_n_xy[~geom_mask], False)
+    geom_mask ^= bare_mask
+
+    if not create_geom_by_mask(dem_band, dst_layer, geom_mask,
+            'Seeds: {0} at {1[0]},{1[1]}',
+            DEM_SEED_FEATURE_STYLE):
+        print('Warnig: Unable to create "leaf" geometries', file=sys.stderr)
+
+    if not create_geom_by_mask(dem_band, dst_layer, bare_mask,
+            'Bare seeds: {0} at {1[0]},{1[1]}',
+            DEM_BSEED_FEATURE_STYLE):
+        print('Warnig: Unable to create "leaf" geometries', file=sys.stderr)
+
+    #
+    # Create the "Leafs" OGR layer
+    #
+    dst_layer = gdal_utils.gdal_vect_layer.create(dst_ds, 'dir_arr / Leafs',
+            srs=dem_band.get_spatial_ref(), geom_type=gdal_utils.wkbPolygon)
+    if dst_layer is None:
+        print('Error: Unable to create layer', file=sys.stderr)
+        return None
+
+    dst_layer.create_field('Name', gdal_utils.OFTString)    # KML <name>
+
+    # Isolate "leaf" pixels
+    geom_mask = numpy.ones(dir_arr.shape, dtype=bool)
+    gdal_utils.write_arr(geom_mask, mgrid_n_xy, False)
+
+    if not create_geom_by_mask(dem_band, dst_layer, geom_mask,
+            'Leafs: {0} at {1[0]},{1[1]}',
+            DEM_LEAF_FEATURE_STYLE):
+        print('Warnig: Unable to create "leaf" geometries', file=sys.stderr)
 
     return dst_layer
 
@@ -200,6 +258,7 @@ def main(argv):
     """Main entry"""
     truncate = True
     eval_str = None
+    dir_arr = None
     src_filename = dst_filename = None
     while argv:
         if argv[0][0] == '-':
@@ -210,6 +269,9 @@ def main(argv):
             elif argv[0] == '--calc':
                 argv = argv[1:]
                 eval_str = argv[0]
+            elif argv[0] == '--dir_arr':
+                argv = argv[1:]
+                dir_arr = argv[0]
             else:
                 return print_help('Unsupported option "%s"'%argv[0])
         else:
@@ -236,6 +298,12 @@ def main(argv):
 
     dem_band.load()
 
+    # Load 'dir_arr'
+    if dir_arr is not None:
+        dir_arr = numpy.load(dir_arr)
+        if (dir_arr.shape != dem_band.get_elevation(True).shape):
+            return print_help('DEM and "dir_arr" shape mismatch"%s"'%src_filename)
+
     if truncate:
         for i in reversed(range(dst_ds.get_layer_count())):
             print('  Deleting layer', gdal_utils.gdal_vect_layer(dst_ds, i).get_name())
@@ -244,6 +312,10 @@ def main(argv):
     # Create all info geometries
     if create_info_geometries(dem_band, dst_ds, eval_str) is None:
         return 1
+
+    if dir_arr is not None:
+        if create_dir_arr_geometries(dem_band, dir_arr, dst_ds) is None:
+            return 1
 
     return 0
 
@@ -254,7 +326,8 @@ def print_help(err_msg=None):
     print('\tOptions:')
     print('\t-h\t- This screen')
     print('\t-a\t- Append to the existing OGR geometry')
-    print('\t--calc <eval-expt> - Create geometries from an eval() expression')
+    print('\t--dir_arr <dir_arr-npy> - Create geometries from an "dir_arr" (n_dir) npy-file')
+    print('\t--calc <eval-expt>      - Create geometries from an eval() expression')
     print('\t\tThe "A" is a numpy array with the DEM elevations, examples:')
     print('\t\t  "A<1000"         -- Elevations under 1000m')
     print('\t\t  "(A>10)&(A<100)" -- Elevations between 10 and 100m')
