@@ -289,105 +289,50 @@ def calculate_result_lines(dir_arr, dist_arr):
     result_lines = numpy.take(result_lines, argsort)
     return result_lines
 
-def flip_line(new_dir_arr, dir_arr, x_y):
-    """Flip all 'n_dir'-s along a line, invert the distances"""
-    prev_dir, start_dist = gdal_utils.read_arr(dir_arr, x_y)
-    print('Flipping line at', x_y, ', distance %d'%start_dist)
-
-    gdal_utils.write_arr(new_dir_arr, x_y, (NEIGHBOR_SEED, 0.))
+def flip_line(dir_arr, x_y):
+    """Flip all 'n_dir'-s along a line"""
+    prev_dir = gdal_utils.read_arr(dir_arr, x_y)
+    gdal_utils.write_arr(dir_arr, x_y, NEIGHBOR_STOP)
     while True:
         n_xy = neighbor_xy(x_y, prev_dir)
-        n_dir, dist = gdal_utils.read_arr(dir_arr, n_xy)
-        gdal_utils.write_arr(new_dir_arr, n_xy, (neighbor_flip(prev_dir), start_dist - dist))
+        n_dir = gdal_utils.read_arr(dir_arr, n_xy)
+        gdal_utils.write_arr(dir_arr, n_xy, neighbor_flip(prev_dir))
         if neighbor_is_invalid(n_dir):
-            assert n_dir == NEIGHBOR_SEED
-            print('  Remove former seed at', n_xy)
+            assert n_dir == NEIGHBOR_SEED or n_dir == NEIGHBOR_STOP
             return n_xy
 
         x_y = n_xy
         prev_dir = n_dir
 
-def flip_seed_lines(dir_arr, result_lines):
-    """Create a new 'dir_arr', where all the first lines ending to any of "seed"-s are flipped"""
-    new_dir_arr = numpy.empty_like(dir_arr)
-    new_dir_arr['n_dir'] = NEIGHBOR_PENDING
-    # Copy "invalid" markers
-    mask = dir_arr['n_dir'] == NEIGHBOR_INVALID
-    new_dir_arr['n_dir'][mask] = NEIGHBOR_INVALID
-    new_dir_arr['dist'] = numpy.nan
+def flip_seed_lines(dir_arr, dist_arr):
+    """Create a new 'dir_arr', where all the longest lines ending to any of "seed"-s are flipped"""
+    # Use a helper array, where each element points to its neighbor
+    mgrid_n_xy = neighbor_xy_safe(get_mgrid(dir_arr.shape), dir_arr)
 
-    # Rescan and copy all lines:
-    # - The ones ending in a 'seed' are flipped, thus the NEIGHBOR_SEED marker is replaced with
-    #   a valid direction. This effectively changes the final part the other overlapping lines.
-    #   Moreover, the ones that ended formerly in that 'seed' are extended to completely overlap
-    #   the flipped one.
-    # - The 'dist' members along the others are adjusted to reflect the change in that overlapping
-    #   section.
-    new_result_lines = numpy.empty(0, dtype=result_lines.dtype)
-    progress_next = 0
-    for start_xy, _ in reversed(result_lines):
-        # Scan the line upto already updated point, 'seed' or 'stop' markers
-        x_y = start_xy
-        n_dir, start_dist = gdal_utils.read_arr(dir_arr, x_y)
-        dist = start_dist
-        while True:
-            new_dir, new_dist = gdal_utils.read_arr(new_dir_arr, x_y)
-            if new_dir != NEIGHBOR_PENDING:
-                # An already updated point is reached, adjust by using the new distance
-                adj_dist = new_dist - dist
-                break
-            if neighbor_is_invalid(n_dir):
-                if n_dir == NEIGHBOR_SEED:
-                    # A seed is reached, flip the line
-                    adj_dist = None
-                else:
-                    # A stop-marker is reached, just copy the line
-                    assert n_dir == NEIGHBOR_STOP
-                    adj_dist = 0
-                break
+    # Isolate all the 'leaf' pixels
+    all_leafs = numpy.zeros(dir_arr.shape, dtype=bool)
+    gdal_utils.write_arr(all_leafs, mgrid_n_xy, True)
+    print('Flipping the longest lines starting at %d leafs'%(numpy.count_nonzero(~all_leafs)))
 
-            x_y = neighbor_xy(x_y, n_dir)
-            n_dir, dist = gdal_utils.read_arr(dir_arr, x_y)
+    # Loop until the 'leaf' pixels are processed
+    while not all_leafs.all():
+        # Obtain the 'leaf' with longest 'dist' then flip it
+        flat_idx = numpy.ma.array(dist_arr, mask=all_leafs).argmax()
+        x_y = numpy.array(numpy.unravel_index(flat_idx, dir_arr.shape))
+        s_xy = flip_line(dir_arr, x_y)
+        print('  Flipped longest line from %s to %s, dist %d'%(x_y, s_xy, gdal_utils.read_arr(dist_arr, x_y)))
 
-        # Process the scanned line-segment
-        if adj_dist is None:
-            # This reached 'seed' - flip it, later others will merge to it
-            start_xy = flip_line(new_dir_arr, dir_arr, start_xy)
-            # Note:
-            # The sorted_arr_insert() is called to handle the case when this is the only line
-            # ending in that 'seed' (quite rare case). In other cases, at the next stage it will
-            # be discarded: reduced_distance() will cut it zero, as it is completelly ovelapped.
-        else:
-            # This reached an already updated point - adjust all distances
-            start_dist += adj_dist
-            x_y = start_xy
-            while True:
-                new_dir, _ = gdal_utils.read_arr(new_dir_arr, x_y)
-                if new_dir != NEIGHBOR_PENDING:
-                    # Adjustment complete
-                    break
+        # Mask-out all pixels descending from this 'seed'
+        mask = numpy.zeros(shape=dir_arr.shape, dtype=bool)
+        gdal_utils.write_arr(mask, s_xy, True)
+        # Select the neighbors pointing to the masked pixels by using 'mgrid_n_xy'
+        # The initial mask must be removed as it will pass thru - its 'mgrid_n_xy' points to them-self
+        mask = gdal_utils.read_arr(mask, mgrid_n_xy) ^ mask
+        while mask.any():
+            all_leafs |= mask
+            mask = gdal_utils.read_arr(mask, mgrid_n_xy)
 
-                n_dir, dist = gdal_utils.read_arr(dir_arr, x_y)
-                gdal_utils.write_arr(new_dir_arr, x_y, (n_dir, dist + adj_dist))
-                if n_dir == NEIGHBOR_STOP:
-                    # Copy complete
-                    break
-                assert not neighbor_is_invalid(n_dir)
-                x_y = neighbor_xy(x_y, n_dir)
-
-        #assert start_dist == reduced_distance(new_dir_arr, start_xy)
-        new_result_lines = sorted_arr_insert(new_result_lines,
-                numpy.array((start_xy, start_dist), dtype=result_lines.dtype), 'dist')
-
-        #
-        # Progress, total ~10 messages
-        #
-        if progress_next < new_result_lines.shape[0]:
-            print('  Adjusted', new_result_lines.shape[0], 'lines, max/mid/min len %d/%d/%d'%(
-                    new_result_lines[-1]['dist'], new_result_lines[new_result_lines.shape[0] // 2]['dist'], new_result_lines[0]['dist']))
-            progress_next += result_lines.shape[0] // 10
-
-    return new_dir_arr, new_result_lines
+    return dir_arr
 
 #
 # Third stage - combine lines
@@ -599,10 +544,19 @@ def main(argv):
 
         start = time.time()
 
-        # flip_seed_lines() needs the 'dist' member of 'dir_dist_arr' and 'result_lines'
+        # flip_seed_lines() needs the 'dist_arr'
         distance = gdal_utils.geod_distance(dem_band) if 0 == DISTANCE_METHOD \
                 else gdal_utils.tm_distance(dem_band) if 1 == DISTANCE_METHOD \
                 else gdal_utils.draft_distance(dem_band)
+        dist_arr = calculate_dist_arr(distance, dir_arr)
+
+        # Actual flip
+        dir_arr = flip_seed_lines(dir_arr, dist_arr)
+        if dir_arr is None:
+            print('Error: Failed to flip longest lines', file=sys.stderr)
+            return 2
+
+        # Calculate the updated 'dist_arr' and 'result_lines'
         dist_arr = calculate_dist_arr(distance, dir_arr)
         result_lines = calculate_result_lines(dir_arr, dist_arr)
 
@@ -613,13 +567,8 @@ def main(argv):
             ])
         dir_dist_arr['n_dir'] = dir_arr
         dir_dist_arr['dist'] = dist_arr
+        dir_arr = dir_dist_arr
         del dir_arr, dist_arr
-
-        # Actual flip
-        dir_dist_arr, result_lines = flip_seed_lines(dir_dist_arr, result_lines)
-        if dir_dist_arr is None:
-            print('Error: Failed to flip longest lines', file=sys.stderr)
-            return 2
 
         duration = time.time() - start
         print('Flip & merge longest lines, total %d lines, max/min length %d/%d, %d sec'%(
