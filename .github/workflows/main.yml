@@ -31,8 +31,9 @@ env:
   DEF_DST_EXT: ".kml"
   DEF_GDALWARP_OPTIONS: "-te 21.5 39.0 22.0 39.5" # SE quarter of N39E021.hgt (600x600)
   # GDAL prebuilt package from https://gisinternals.com/release.php,
-  # will add ".zip",  "-libs.zip" and "-src.zip"
-  GDAL_URL_PREFIX: "http://download.gisinternals.com/sdk/downloads/release-1928-x64-gdal-3-2-1-mapserver-7-6-2"
+  # will add ".zip" and "-libs.zip"
+  GDAL_URL_PREFIX: "https://download.gisinternals.com/sdk/downloads/release-1928-x64-gdal-3-2-1-mapserver-7-6-2"
+  GDAL_SRC_REF: "v3.2.1"
 
 jobs:
   generate:
@@ -75,23 +76,33 @@ jobs:
           GDAL
         key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}-${{ env.GDAL_URL_PREFIX }}
 
+    - name: Clone GDAL sources
+      if: steps.pip-cache.outputs.cache-hit != 'true'
+      uses: actions/checkout@v2
+      with:
+        repository: osgeo/gdal
+        ref: ${{ env.GDAL_SRC_REF }}
+        path: GDAL
+
+    - name: Download GDAL release
+      if: steps.pip-cache.outputs.cache-hit != 'true'
+      run: |
+        echo "URL prefix ${{ env.GDAL_URL_PREFIX }}"
+        ForEach ($postfix in ".zip", "-libs.zip") {
+          $SRC_URI = [uri]("${{ env.GDAL_URL_PREFIX }}" + $postfix)
+          $SRC_ZIP = $SRC_URI.Segments[-1]
+          echo "Downloading from $SRC_URI..."
+          Invoke-WebRequest -H @{Accept='application/octet-stream'} $SRC_URI -o $SRC_ZIP
+          if ($proc.ExitCode) {exit $proc.ExitCode}
+          Expand-Archive $SRC_ZIP -DestinationPath GDAL
+          if ($proc.ExitCode) {exit $proc.ExitCode}
+        }
+
     - name: Prepare for GDAL installation
       run: |
-        # Skip download if cached, alternativelly ("${{ steps.pip-cache.outputs.cache-hit }}" -ne "true")
-        if ( !(Test-Path GDAL) ) {
-          echo "Downloading GDAL from ${{ env.GDAL_URL_PREFIX }}..."
-          ForEach ($postfix in ".zip", "-libs.zip", "-src.zip") {
-            $SRC_URI = [uri]("${{ env.GDAL_URL_PREFIX }}" + $postfix)
-            $SRC_ZIP = $SRC_URI.Segments[-1]
-            Invoke-WebRequest -H @{Accept='application/octet-stream'} $SRC_URI -o $SRC_ZIP
-            if ($proc.ExitCode) {exit $proc.ExitCode}
-            Expand-Archive $SRC_ZIP -DestinationPath GDAL
-            if ($proc.ExitCode) {exit $proc.ExitCode}
-          }
-        }
         $GDAL_BASE=Get-Item("GDAL")
 
-        $INCLUDE="$GDAL_BASE/include;$GDAL_BASE/src/gdal-3-2-vc16x64/gdal/gcore;$GDAL_BASE/src/gdal-3-2-vc16x64/gdal/port;$GDAL_BASE/src/gdal-3-2-vc16x64/gdal/gnm"
+        $INCLUDE="$GDAL_BASE/include;$GDAL_BASE/gdal/gcore;$GDAL_BASE/gdal/gnm"
         echo "INCLUDE=$INCLUDE" >> ${env:GITHUB_ENV}
         echo "INCLUDE set to $INCLUDE"
 
