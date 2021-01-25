@@ -10,6 +10,7 @@ DEM_NODATA_FEATURE_STYLE = 'PEN(c:#802020,w:1px);BRUSH(fc:#80101080)'
 DEM_LEAF_FEATURE_STYLE = 'PEN(c:#208020,w:1px);BRUSH(fc:#10801080)'
 DEM_SEED_FEATURE_STYLE = 'PEN(c:#C0C010,w:1px);BRUSH(fc:#C0C01080)'
 DEM_BSEED_FEATURE_STYLE = 'PEN(c:#808020,w:1px);BRUSH(fc:#80801080)'
+DEM_NODE_FEATURE_STYLE = 'PEN(c:#204080,w:1px);BRUSH(fc:#10408080)'
 
 def get_mgrid(org_xy, size_xy, full=False):
     """Create a 2x2 grid around a boundary, or a full grid"""
@@ -251,6 +252,42 @@ def create_dir_arr_geometries(dem_band, dir_arr, dst_ds):
             'Leafs: {0} at {1[0]},{1[1]}',
             DEM_LEAF_FEATURE_STYLE):
         print('Warnig: Unable to create "leaf" geometries', file=sys.stderr)
+
+    #
+    # Create multiple "Nodes" OGR layers
+    #
+    # Count the number of neighbors pointing to each pixel
+    n_num = numpy.zeros(dir_arr.shape, dtype=int)
+    n = numpy.empty_like(n_num)
+    for n_dir in ridges.VALID_NEIGHBOR_DIRS:
+        arr = mgrid_n_xy[dir_arr == n_dir]
+        n.fill(0)
+        gdal_utils.write_arr(n, arr, 1)
+        n_num += n
+    del n
+    print('Total %d/%d nodes, max. range %d'%(
+            numpy.count_nonzero(n_num > 1), n_num.size, n_num.max()))
+
+    # Add points where more than 2 neighbors pointing
+    for val in range(2, n_num.max() + 1):
+        geom_mask = n_num == val
+        if not geom_mask.any():
+            continue
+        print('Creating %d nodes of range %d'%(numpy.count_nonzero(geom_mask), val))
+
+        # Create a "Nodes" OGR layer
+        dst_layer = gdal_utils.gdal_vect_layer.create(dst_ds, 'dir_arr / Nodes(%d)'%val,
+                srs=dem_band.get_spatial_ref(), geom_type=gdal_utils.wkbPolygon)
+        if dst_layer is None:
+            print('Error: Unable to create layer', file=sys.stderr)
+            return None
+
+        dst_layer.create_field('Name', True)    # KML <name>
+
+        if not create_geom_by_mask(dem_band, dst_layer, geom_mask,
+                'Nodes(%d): {0} at {1[0]},{1[1]}'%val,
+                DEM_NODE_FEATURE_STYLE):
+            print('Warnig: Unable to create "node" geometries', file=sys.stderr)
 
     return dst_layer
 
