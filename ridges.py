@@ -610,7 +610,7 @@ def main(argv):
     #
     start = time.time()
 
-    polylines = combine_lines(result_lines, dir_dist_arr, result_lines[-1]['dist'] / 10)
+    polylines = combine_lines(result_lines, dir_dist_arr, result_lines[-1]['dist'] / 20)
     if not polylines:
         print('Error: Failed to combine lines', file=sys.stderr)
         return 2
