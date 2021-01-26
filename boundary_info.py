@@ -10,6 +10,7 @@ DEM_NODATA_FEATURE_STYLE = 'PEN(c:#802020,w:1px);BRUSH(fc:#80101080)'
 DEM_LEAF_FEATURE_STYLE = 'PEN(c:#208020,w:1px);BRUSH(fc:#10801080)'
 DEM_SEED_FEATURE_STYLE = 'PEN(c:#C0C010,w:1px);BRUSH(fc:#C0C01080)'
 DEM_BSEED_FEATURE_STYLE = 'PEN(c:#C08020,w:1px);BRUSH(fc:#C0801080)'
+DEM_SEED_COV_FEATURE_STYLE = 'PEN(c:#208080,w:1px);BRUSH(fc:#10808040)'
 DEM_NODE_FEATURE_STYLE = 'PEN(c:#402020,w:1px);BRUSH(fc:#40202080)'
 
 def get_mgrid(org_xy, size_xy, full=False):
@@ -268,6 +269,41 @@ def create_dir_arr_geometries(dem_band, dir_arr, dst_ds):
             'Bare seeds: {0} at {1[0]},{1[1]}',
             DEM_BSEED_FEATURE_STYLE):
         print('Warnig: Unable to create "leaf" geometries', file=sys.stderr)
+
+    #
+    # Create the "Seed-Coverage" OGR layer
+    #
+    dst_layer = gdal_utils.gdal_vect_layer.create(dst_ds, 'dir_arr / Seed Coverage',
+            srs=dem_band.get_spatial_ref(), geom_type=gdal_utils.wkbPolygon)
+    if dst_layer is None:
+        print('Error: Unable to create layer', file=sys.stderr)
+        return None
+
+    dst_layer.create_field('Name', gdal_utils.OFTString)    # KML <name>
+
+    while seed_mask.any():
+        # Select a single "seed" pixel
+        s_xy = numpy.array(numpy.unravel_index(seed_mask.argmax(), seed_mask.shape))
+        gdal_utils.write_arr(seed_mask, s_xy, False)
+
+        # Mask-out all pixels descending from this 'seed'
+        geom_mask = numpy.zeros(shape=dir_arr.shape, dtype=bool)
+        gdal_utils.write_arr(geom_mask, s_xy, True)
+        # Select the neighbors pointing to the masked pixels by using 'mgrid_n_xy'
+        # The initial mask must be removed as it will pass thru - its 'mgrid_n_xy' points to them-self
+        mask = gdal_utils.read_arr(geom_mask, mgrid_n_xy) ^ geom_mask
+        while mask.any():
+            geom_mask |= mask
+            mask = gdal_utils.read_arr(mask, mgrid_n_xy)
+
+        if not create_geom_by_mask(dem_band, dst_layer, geom_mask, True,
+                'Seed %d,%d coverage: {0}'%(s_xy[0], s_xy[1]),
+                DEM_SEED_COV_FEATURE_STYLE):
+            print('Warnig: Unable to create "leaf" geometries', file=sys.stderr)
+
+        n_seeds = numpy.count_nonzero(seed_mask)
+        if n_seeds % 10 == 0:
+            print('Seeds left %d'%n_seeds)
 
     #
     # Create the "Leafs" OGR layer
