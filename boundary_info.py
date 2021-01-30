@@ -23,11 +23,11 @@ def get_mgrid(org_xy, size_xy, full=False):
 
 class expand_mask:
     """Mask expansion tool"""
-    def __init__(self, shape):
-        """Prepare the map-array toward the 4-directions"""
+    def __init__(self, shape, eight_dir=False):
+        """Prepare the map-array toward the 4 or 8 directions"""
         plain_map = get_mgrid((0,0), shape, True)
         # Map toward the four directions (right, up, left, down), to be used with read_arr()
-        self.four_dir_map = numpy.stack((
+        self.dir_map = numpy.stack((
             # right
                 numpy.concatenate((plain_map[:1], plain_map[:-1]), axis=0),
             # up
@@ -36,12 +36,24 @@ class expand_mask:
                 numpy.concatenate((plain_map[1:], plain_map[-1:]), axis=0),
             # down
                 numpy.concatenate((plain_map[:,1:], plain_map[:,-1:]), axis=1)))
+        # Append the four diagonal directions (right-up, left-up, right-down, left-down)
+        if eight_dir:
+            diag_dir_map = numpy.stack((
+                # right-up
+                    numpy.concatenate((self.dir_map[0][:,:1], self.dir_map[0][:,:-1]), axis=1),
+                # left-up
+                    numpy.concatenate((self.dir_map[2][:,:1], self.dir_map[2][:,:-1]), axis=1),
+                # right-down
+                    numpy.concatenate((self.dir_map[0][:,1:], self.dir_map[0][:,-1:]), axis=1),
+                # left-down
+                    numpy.concatenate((self.dir_map[2][:,1:], self.dir_map[2][:,-1:]), axis=1)))
+            self.dir_map = numpy.concatenate((self.dir_map, diag_dir_map))
 
     def expand(self, src_mask, target_mask):
         """Expand a mask till completely fills island(s) in the target"""
         while True:
             # Expand the mask toward the 4 directions
-            mask = gdal_utils.read_arr(src_mask, self.four_dir_map).any(axis=0)
+            mask = gdal_utils.read_arr(src_mask, self.dir_map).any(axis=0)
             mask |= src_mask
             # ...then, cut the 'target_mask'
             mask &= target_mask
@@ -50,11 +62,13 @@ class expand_mask:
                 return src_mask
             src_mask = mask
 
-def create_ring_by_mask(dst_layer, dem_band, mask):
+def create_ring_by_mask(dst_layer, dem_band, mask, outside):
     """Create ring geometry around masked pixels"""
     ring = dst_layer.create_feature_geometry(gdal_utils.wkbLinearRing)
     # The 4 90-deg rotations of the unit x-vector, clockwise
     x_rots = numpy.array(((1,0), (0,1), (-1,0), (0,-1)), dtype=numpy.int8)
+    # Inflate or deflate geometry
+    adjust_coef = .51 if outside else .49
 
     # Helper finctions
     def is_masked(x_y):
@@ -66,7 +80,7 @@ def create_ring_by_mask(dst_layer, dem_band, mask):
         """Add the point at the 'correct' edge of pixel"""
         # Workaround for "Ring Self-intersection at or near point..." / "Invalid polygon":
         # Deflate the geometry by 1%
-        dir = dir * .495
+        dir = dir * adjust_coef
         ring.add_point(*dem_band.xy2lonlat(x_y - dir))
     def write_arr_safe(arr, x_y, val):
         """Write to array by ignoring out of bounds locations"""
@@ -79,41 +93,62 @@ def create_ring_by_mask(dst_layer, dem_band, mask):
     # Trace around this shape by using the right-hand rule
     x_y = start_xy.copy()
     while True:
-        # Check the forward pixels
-        if is_masked(x_y + x_rots[0]):
-            # Masked: move forward
-            x_y += x_rots[0]
+        if outside:
             # Check the left pixel (counter-clockwise)
-            if is_masked(x_y + x_rots[-1]):
+            if is_masked(x_y + x_rots[0] + x_rots[-1]):
                 # Masked: add point, move to left, rotate counter-clockwise
+                x_y += x_rots[0]
                 add_point(x_y, x_rots[0] + x_rots[1])
                 x_y += x_rots[-1]
                 x_rots = numpy.roll(x_rots, 1, axis=0)
+            # Check the forward pixels
+            elif is_masked(x_y + x_rots[0]):
+                # Masked: move forward
+                x_y += x_rots[0]
+                write_arr_safe(frame_mask, x_y + x_rots[-1], False)
             else:
+                # Not masked: rotate clockwise, add point (no move)
+                # -> frame_mask at diagonals to handle 8-direction expand_mask
+                write_arr_safe(frame_mask, x_y + x_rots[0] + x_rots[-1], False)
+                x_rots = numpy.roll(x_rots, -1, axis=0)
+                add_point(x_y, x_rots[0] + x_rots[1])
                 write_arr_safe(frame_mask, x_y + x_rots[-1], False)
         else:
-            # Not masked: rotate clockwise, add point (no move)
-            x_rots = numpy.roll(x_rots, -1, axis=0)
-            add_point(x_y, x_rots[0] + x_rots[1])
-            write_arr_safe(frame_mask, x_y + x_rots[-1], False)
+            # Check the forward pixels
+            if is_masked(x_y + x_rots[0]):
+                # Masked: move forward
+                x_y += x_rots[0]
+                # Check the left pixel (counter-clockwise)
+                if is_masked(x_y + x_rots[-1]):
+                    # Masked: add point, move to left, rotate counter-clockwise
+                    add_point(x_y, x_rots[0] + x_rots[1])
+                    x_y += x_rots[-1]
+                    x_rots = numpy.roll(x_rots, 1, axis=0)
+                else:
+                    write_arr_safe(frame_mask, x_y + x_rots[-1], False)
+            else:
+                # Not masked: rotate clockwise, add point (no move)
+                x_rots = numpy.roll(x_rots, -1, axis=0)
+                add_point(x_y, x_rots[0] + x_rots[1])
+                write_arr_safe(frame_mask, x_y + x_rots[-1], False)
 
         # Check for loop completion
         # (only allowed when moving toward as when started)
         if (x_y == start_xy).all() and x_rots[0,0] == 1:
             return ring, start_xy, frame_mask
 
-def create_geom_by_mask(dem_band, dst_layer, geom_mask, name_fmt, style):
+def create_geom_by_mask(dem_band, dst_layer, geom_mask, outside, name_fmt, style):
     """Add polygons around all the masked pixels"""
     start = time.time()
 
     # Prepare the "expand mask" tool
-    expand = expand_mask(geom_mask.shape)
+    expand = expand_mask(geom_mask.shape, outside)
 
     num_geometries = 0
     num_islands = 0
     while geom_mask.any():
         # Create ring geometry around some of the islands
-        ring, start_xy, frame_mask = create_ring_by_mask(dst_layer, dem_band, geom_mask)
+        ring, start_xy, frame_mask = create_ring_by_mask(dst_layer, dem_band, geom_mask, outside)
         # Expand the mask till it fills this island
         cur_mask = numpy.zeros_like(geom_mask)
         gdal_utils.write_arr(cur_mask, start_xy, True)
@@ -131,7 +166,7 @@ def create_geom_by_mask(dem_band, dst_layer, geom_mask, name_fmt, style):
         # Expand the mask to fill all its islands, then XOR it to the original
         cur_mask = expand.expand(cur_mask, frame_mask) ^ cur_mask
         while cur_mask.any():
-            ring, x_y, _ = create_ring_by_mask(dst_layer, dem_band, cur_mask)
+            ring, x_y, _ = create_ring_by_mask(dst_layer, dem_band, cur_mask, outside)
             geom.add_geometry(ring)
             # Expand the mask till it fills this island
             mask = numpy.zeros_like(cur_mask)
@@ -196,7 +231,7 @@ def create_info_geometries(dem_band, dst_ds, eval_str=None):
         geom_mask = eval(eval_str, None, {"A": dem_band.get_elevation(True)})
         name_fmt = 'Calc "%s": {0} at {1[0]},{1[1]}'%eval_str
 
-    if not create_geom_by_mask(dem_band, dst_layer, geom_mask, name_fmt, DEM_NODATA_FEATURE_STYLE):
+    if not create_geom_by_mask(dem_band, dst_layer, geom_mask, False, name_fmt, DEM_NODATA_FEATURE_STYLE):
         print('Warnig: Unable to create "NoDataValue" geometries', file=sys.stderr)
 
     return dst_layer
@@ -220,15 +255,16 @@ def create_dir_arr_geometries(dem_band, dir_arr, dst_ds):
     # Isolate "seed"/"stop" pixels
     geom_mask = (dir_arr == ridges.NEIGHBOR_SEED) | (dir_arr == ridges.NEIGHBOR_STOP)
     bare_mask = geom_mask.copy()
-    gdal_utils.write_arr(bare_mask, mgrid_n_xy[~geom_mask], False)
+    gdal_utils.write_arr(bare_mask, mgrid_n_xy[~bare_mask], False)
     geom_mask ^= bare_mask
+    seed_mask = geom_mask.copy()
 
-    if not create_geom_by_mask(dem_band, dst_layer, geom_mask,
+    if not create_geom_by_mask(dem_band, dst_layer, geom_mask, False,
             'Seeds: {0} at {1[0]},{1[1]}',
             DEM_SEED_FEATURE_STYLE):
         print('Warnig: Unable to create "leaf" geometries', file=sys.stderr)
 
-    if not create_geom_by_mask(dem_band, dst_layer, bare_mask,
+    if not create_geom_by_mask(dem_band, dst_layer, bare_mask, False,
             'Bare seeds: {0} at {1[0]},{1[1]}',
             DEM_BSEED_FEATURE_STYLE):
         print('Warnig: Unable to create "leaf" geometries', file=sys.stderr)
@@ -248,7 +284,7 @@ def create_dir_arr_geometries(dem_band, dir_arr, dst_ds):
     geom_mask = numpy.ones(dir_arr.shape, dtype=bool)
     gdal_utils.write_arr(geom_mask, mgrid_n_xy, False)
 
-    if not create_geom_by_mask(dem_band, dst_layer, geom_mask,
+    if not create_geom_by_mask(dem_band, dst_layer, geom_mask, False,
             'Leafs: {0} at {1[0]},{1[1]}',
             DEM_LEAF_FEATURE_STYLE):
         print('Warnig: Unable to create "leaf" geometries', file=sys.stderr)
@@ -284,7 +320,7 @@ def create_dir_arr_geometries(dem_band, dir_arr, dst_ds):
 
         dst_layer.create_field('Name', gdal_utils.OFTString)    # KML <name>
 
-        if not create_geom_by_mask(dem_band, dst_layer, geom_mask,
+        if not create_geom_by_mask(dem_band, dst_layer, geom_mask, False,
                 'Nodes(%d): {0} at {1[0]},{1[1]}'%val,
                 DEM_NODE_FEATURE_STYLE):
             print('Warnig: Unable to create "node" geometries', file=sys.stderr)
