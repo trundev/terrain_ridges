@@ -38,15 +38,15 @@ RESUME_FROM_SNAPSHOT = 0    # Currently 0 to 2
 #
 DIR_DIST_DTYPE = [
         ('n_dir', NEIGHBOR_DIR_DTYPE),
-        ('dist', numpy.float),
+        ('dist', float),
 ]
 TENTATIVE_DTYPE = [
         ('x_y', (numpy.int32, (2,))),
-        ('alt', numpy.float),
+        ('alt', float),
 ]
 RESULT_LINE_DTYPE = [
         ('x_y', (numpy.int32, (2,))),
-        ('dist', numpy.float),
+        ('dist', float),
 ]
 
 #
@@ -277,10 +277,7 @@ def calculate_result_lines(dir_arr, dist_arr):
     all_leafs = numpy.ones(dir_arr.shape, dtype=bool)
     gdal_utils.write_arr(all_leafs, mgrid_n_xy, False)
     x_y = numpy.array(numpy.nonzero(all_leafs)).T
-    result_lines = numpy.empty(x_y.shape[:-1], dtype=[
-            ('x_y', (numpy.int32, (2,))),
-            ('dist', numpy.float),
-    ])
+    result_lines = numpy.empty(x_y.shape[:-1], dtype=RESULT_LINE_DTYPE)
     result_lines['x_y'] = x_y
     result_lines['dist'] = gdal_utils.read_arr(dist_arr, x_y)
 
@@ -587,10 +584,7 @@ def main(argv):
         result_lines = calculate_result_lines(dir_arr, dist_arr)
 
         # Combine dir_arr and dist_arr for convenience in further processing
-        dir_dist_arr = numpy.empty(dir_arr.shape, dtype=[
-                ('n_dir', NEIGHBOR_DIR_DTYPE),
-                ('dist', numpy.float),
-            ])
+        dir_dist_arr = numpy.empty(dir_arr.shape, dtype=DIR_DIST_DTYPE)
         dir_dist_arr['n_dir'] = dir_arr
         dir_dist_arr['dist'] = dist_arr
         dir_arr = dir_dist_arr
