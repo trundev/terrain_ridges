@@ -182,6 +182,77 @@ def do_redraw(colls, dem_band, dir_arr):
                 scatter(*pts[mask].T, s=n_num[mask]**2, **NODES_FMT))
     node_markers(colls)
 
+    # Extract graph node bridges (edges)
+    def get_bridge_lines(dist_arr):
+        # Extract "leafs", "nodes" and "real-seeds"
+        seed_mask = (n_num > 0) & ridges.neighbor_is_invalid(dir_arr)
+        mask = (n_num == 0) | (n_num > 1) | seed_mask
+        print('Located %d "node-bridges"'%(numpy.count_nonzero(mask)))
+        x_y = mgrid_xy[mask]
+        bridge_lines = numpy.empty(x_y.shape[0], dtype=[
+                ('x_y', (numpy.int32, (2,))),
+                ('dist', float),
+                ('next', numpy.int32),
+                ('num', numpy.int32),
+                ])
+        bridge_lines['x_y'] = x_y
+        bridge_lines['dist'] = dist_arr[mask]
+        bridge_lines['next'] = -2   # Invalid index
+        bridge_lines['num'] = 0
+        # Map x_y to the 'next' bridge indices, reserved values:
+        # -1 -- bridge, -2 -- bare-seed or invalid
+        bridge_grid = numpy.full(dir_arr.shape, -2, bridge_lines['next'].dtype)
+        bridge_grid[(n_num == 1) & ~seed_mask] = -1
+        bridge_grid[mask] = numpy.mgrid[:numpy.count_nonzero(mask)]
+        print('Creating %d bridges from %d intermediate points, %d real-seed, %d bare-seed + invalid'%(
+                bridge_lines.size, numpy.count_nonzero(bridge_grid == -1),
+                numpy.count_nonzero(seed_mask), numpy.count_nonzero(bridge_grid == -2)))
+
+        # Skip the dummy seed-lines, but keep the 'next' value -1
+        bridge_lines['next'][bridge_grid[seed_mask]] = -1
+        res_mask = bridge_lines['next'] != -1
+        x_y = x_y[res_mask]
+        while x_y.size:
+            bridge_lines['num'][res_mask] += 1
+            x_y = gdal_utils.read_arr(mgrid_n_xy, x_y)
+            bridge = gdal_utils.read_arr(bridge_grid, x_y)
+            mask = bridge == -1     # intermediate bridge point
+
+            # Get the completed lines, shrink result masks
+            done_mask = res_mask.copy()
+            done_mask[res_mask] = ~mask
+            res_mask[res_mask] = mask
+            # Update 'next' where processing in completed
+            if done_mask.any():
+                assert (bridge_lines['next'][done_mask] == -2).all()
+                bridge_lines['next'][done_mask] = bridge[~mask]
+
+            x_y = x_y[mask]
+            dist = gdal_utils.read_arr(dist_arr, x_y)
+            assert (dist > 0).all()
+            bridge_lines['dist'][res_mask] += dist
+
+        assert (bridge_lines['next'] > -2).all(), 'Unassigned bridges left'
+        argsort = numpy.argsort(bridge_lines['dist'])
+        bridge_lines = numpy.take(bridge_lines, argsort)
+        # Update 'next' pointers by using swapped argsort
+        swap_argsort = numpy.empty_like(argsort)
+        swap_argsort[argsort] = numpy.mgrid[:argsort.size]
+        # Keep the negative 'next' values (-1 is a dummy seed-line)
+        mask = bridge_lines['next'] >= 0
+        bridge_lines['next'][mask] = swap_argsort[bridge_lines['next'][mask]]
+        print('Created bridges along %d points, min/max len %f/%f'%(
+                bridge_lines['num'].sum(),
+                # Skip the zero-sized dummy seed-lines at front
+                bridge_lines['dist'][numpy.count_nonzero(seed_mask)],
+                bridge_lines['dist'][-1]))
+        return bridge_lines
+    # Calculate distances between points (dist_arr)
+    distance = gdal_utils.geod_distance(dem_band)
+    dist_arr = distance.get_distance(mgrid_xy, mgrid_n_xy)
+    # Extract node bridges
+    bridge_lines = get_bridge_lines(dist_arr)
+
     #
     # Vectors along dir_arr
     #
@@ -217,12 +288,34 @@ def do_redraw(colls, dem_band, dir_arr):
         elif colls.dir_style == 2:
             # Colors based on elevation
             colors = lonlatalt[...,2]
+            if True:
+                # Hide leaf bridges
+                x_y = numpy.array(numpy.nonzero(n_num == 0)).T
+                # Mask of all bridge intermediate pixels
+                bridge_mask = (n_num == 1) & ~ridges.neighbor_is_invalid(dir_arr)
+                while x_y.size:
+                    gdal_utils.write_arr(show_mask, x_y, False)
+                    x_y = gdal_utils.read_arr(mgrid_n_xy, x_y)
+                    mask = gdal_utils.read_arr(bridge_mask, x_y)
+                    x_y = x_y[mask]
         else:
-            # All in same color
-            pass
+            # Colors based on the bridge lengths
+            x_y = bridge_lines['x_y']
+            dists = bridge_lines['dist']
+            gdal_utils.write_arr(colors, x_y, dists)
+            # Mask of all bridge intermediate pixels
+            bridge_mask = (n_num == 1) & ~ridges.neighbor_is_invalid(dir_arr)
+            while x_y.size:
+                gdal_utils.write_arr(colors, x_y, dists)
+                x_y = gdal_utils.read_arr(mgrid_n_xy, x_y)
+                mask = gdal_utils.read_arr(bridge_mask, x_y)
+                x_y = x_y[mask]
+                dists = dists[mask]
+                cidx += 1
+            assert (colors[show_mask] > 0).all(), 'Unassigned colors left'
 
         colors = colors[show_mask]
-        print('dir_arr sorted in %d steps'%cidx)
+        print('dir_arr sorted in %d steps, %d pixels'%(cidx, colors.size))
 
         # Invalid and seed points, points to them-self
         vecs = dem_band.xy2lonlatalt(mgrid_n_xy) - lonlatalt
@@ -236,9 +329,7 @@ def do_redraw(colls, dem_band, dir_arr):
             fmt = {**DIR_ARR_FMT, **QUIVER_2D_FMT}
         else:
             fmt = DIR_ARR_FMT
-
-        #TODO: Colors do not work in 3D-mode
-        if not USE_2D:
+            #TODO: Colors do not work in 3D-mode
             colors = None
 
         # Show colored n_dir-s
