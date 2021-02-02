@@ -100,23 +100,25 @@ def do_redraw(colls, dem_band, dir_arr):
     mgrid_xy = numpy.moveaxis(numpy.mgrid[:shape[0],:shape[1]], 0, -1)
     lonlatalt = dem_band.xy2lonlatalt(mgrid_xy)
 
-    # When DEM contains no-data altitudes (NaN), plot_surface() may not render anything
-    nodata_mask = numpy.isnan(lonlatalt[...,2])
-    if nodata_mask.any():
-        lonlatalt[...,2][nodata_mask] = NODATA_ALT
+    def nodata_markers(colls):
+        # When DEM contains no-data altitudes (NaN), plot_surface() may not render anything
+        nodata_mask = numpy.isnan(lonlatalt[...,2])
+        if nodata_mask.any():
+            lonlatalt[...,2][nodata_mask] = NODATA_ALT
 
-    if not USE_2D:
-        colls.replace('terrain', colls.ax.
-                plot_surface(*lonlatalt.T, **TERRAIN_FMT))
+        if not USE_2D:
+            colls.replace('terrain', colls.ax.
+                    plot_surface(*lonlatalt.T, **TERRAIN_FMT))
 
-    # NoData markers at 2/3-rds of altitude
-    nodata_pts = lonlatalt[nodata_mask]
-    if USE_2D:
-        nodata_pts = nodata_pts[...,:2]
-    else:
-        nodata_pts[...,2] = (2 * numpy.nanmax(lonlatalt[...,2]) + numpy.nanmin(lonlatalt[...,2])) / 3
-    colls.replace('nodata', colls.ax.
-            scatter(*nodata_pts.T, **NODATA_FMT))
+        # NoData markers at 2/3-rds of altitude
+        nodata_pts = lonlatalt[nodata_mask]
+        if USE_2D:
+            nodata_pts = nodata_pts[...,:2]
+        else:
+            nodata_pts[...,2] = (2 * numpy.nanmax(lonlatalt[...,2]) + numpy.nanmin(lonlatalt[...,2])) / 3
+        colls.replace('nodata', colls.ax.
+                scatter(*nodata_pts.T, **NODATA_FMT))
+    nodata_markers(colls)
 
     if dir_arr is None:
         return
@@ -128,35 +130,29 @@ def do_redraw(colls, dem_band, dir_arr):
     if USE_2D:
         pts = pts[...,:2]
 
-    # Markers at "pending"
-    mask = dir_arr == ridges.NEIGHBOR_PENDING
-    colls.replace('pendings', colls.ax.
-            scatter(*pts[mask].T, **PENDINGS_FMT))
+    def markers_by_value(colls):
+        # Markers at "pending"
+        mask = dir_arr == ridges.NEIGHBOR_PENDING
+        print('Located %d "pending" pixels'%(numpy.count_nonzero(mask)))
+        colls.replace('pendings', colls.ax.
+                scatter(*pts[mask].T, **PENDINGS_FMT))
 
-    # Markers at "seed" and "stop"
-    mask = dir_arr == ridges.NEIGHBOR_SEED
-    colls.replace('seeds', colls.ax.
-            scatter(*pts[mask].T, **SEEDS_FMT))
-    mask = dir_arr == ridges.NEIGHBOR_STOP
-    colls.replace('stops', colls.ax.
-            scatter(*pts[mask].T, **STOPS_FMT))
+        # Markers at "seed" and "stop"
+        mask = dir_arr == ridges.NEIGHBOR_SEED
+        print('Located %d "seed" pixels'%(numpy.count_nonzero(mask)))
+        colls.replace('seeds', colls.ax.
+                scatter(*pts[mask].T, **SEEDS_FMT))
+        mask = dir_arr == ridges.NEIGHBOR_STOP
+        print('Located %d "stop" pixels'%(numpy.count_nonzero(mask)))
+        colls.replace('stops', colls.ax.
+                scatter(*pts[mask].T, **STOPS_FMT))
+    markers_by_value(colls)
 
+    #
+    # Graph node analysys
+    #
     # Helper array (sort of vector field)
     mgrid_n_xy = ridges.neighbor_xy_safe(mgrid_xy, dir_arr)
-
-    # Markers at "leafs" (pixels w/o neighbor)
-    mask = numpy.ones(dir_arr.shape, dtype=bool)
-    gdal_utils.write_arr(mask, mgrid_n_xy, False)
-    colls.replace('leafs', colls.ax.
-            scatter(*pts[mask].T, **LEAFS_FMT))
-
-    # Invalid and seed points, points to them-self
-    vecs = dem_band.xy2lonlatalt(mgrid_n_xy) - lonlatalt
-    if USE_2D:
-        vecs = vecs[...,:2]
-    else:
-        # Suppress altitude as having problems with quiver() and different units
-        vecs[...,2] = 0
 
     # Count the number of neighbors pointing to each pixel
     n_num = numpy.zeros(dir_arr.shape, dtype=int)
@@ -165,65 +161,90 @@ def do_redraw(colls, dem_band, dir_arr):
         n = numpy.zeros_like(n_num)
         gdal_utils.write_arr(n, n_xy, 1)
         n_num += n
-    # Add points where more than 2 neighbors pointing
-    mask = n_num > 1
-    print('Located %d node pixels, max %d forks'%(numpy.count_nonzero(mask), n_num.max()))
-    colls.replace('nodes', colls.ax.
-            scatter(*pts[mask].T, s=n_num[mask]**2, **NODES_FMT))
+    # Put -1 at invalid nodes, except the "real" seeds (distinguish from the "leafs")
+    n_num[ridges.neighbor_is_invalid(dir_arr) & (n_num == 0)] = -1
+    print('Located %d "real-seed" pixels'%(numpy.count_nonzero(
+            ridges.neighbor_is_invalid(dir_arr) & (n_num > 0))))
+
+    def node_markers(colls):
+        # Markers at "leafs" (pixels w/o neighbor)
+        mask = n_num == 0
+        print('Located %d "leaf" pixels'%(numpy.count_nonzero(mask)))
+        colls.replace('leafs', colls.ax.
+                scatter(*pts[mask].T, **LEAFS_FMT))
+
+        # Add points where more than 2 neighbors pointing
+        mask = n_num > 1
+        print('Located %d "node" pixels (%d at "seed"), max %d forks'%(
+                numpy.count_nonzero(mask), numpy.count_nonzero(mask & ridges.neighbor_is_invalid(dir_arr)),
+                n_num.max()))
+        colls.replace('nodes', colls.ax.
+                scatter(*pts[mask].T, s=n_num[mask]**2, **NODES_FMT))
+    node_markers(colls)
 
     #
     # Vectors along dir_arr
     #
-    if USE_2D:
-        fmt = {**DIR_ARR_FMT, **QUIVER_2D_FMT}
-    else:
-        fmt = DIR_ARR_FMT
+    def n_dir_markers(colls):
+        # Select how to color dir-vectors
+        show_mask = ~ridges.neighbor_is_invalid(dir_arr)
+        colors = numpy.zeros(dir_arr.shape, dtype=int)
+        cidx = 0
+        if colls.dir_style == 0:
+            # Colors expand staring at "seed" and "stop"
+            show_mask[...] = False
+            mask = (dir_arr == ridges.NEIGHBOR_SEED) | (dir_arr == ridges.NEIGHBOR_STOP)
+            mask = gdal_utils.read_arr(mask, mgrid_n_xy) ^ mask
+            while mask.any():
+                colors[mask] = cidx % DIR_ARR_CMAP_IDXS
+                show_mask[mask] = True
+                # Expand
+                mask = gdal_utils.read_arr(mask, mgrid_n_xy)
+                cidx += 1
+        elif colls.dir_style == 1:
+            # Colors contract staring at "leaf"
+            show_mask[...] = False
+            mask = numpy.ones(dir_arr.shape, dtype=bool)
+            gdal_utils.write_arr(mask, mgrid_n_xy, False)
+            while mask.any():
+                colors[mask] = cidx % DIR_ARR_CMAP_IDXS
+                show_mask[mask] = True
+                # Contract
+                m = mask
+                mask = numpy.zeros(dir_arr.shape, dtype=bool)
+                gdal_utils.write_arr(mask, mgrid_n_xy, m)
+                cidx += 1
+        elif colls.dir_style == 2:
+            # Colors based on elevation
+            colors = lonlatalt[...,2]
+        else:
+            # All in same color
+            pass
 
-    # Select how to color dir-vectors
-    show_mask = ~ridges.neighbor_is_invalid(dir_arr)
-    colors = numpy.zeros(dir_arr.shape, dtype=int)
-    cidx = 0
-    if colls.dir_style == 0:
-        # Colors expand staring at "seed" and "stop"
-        show_mask[...] = False
-        mask = (dir_arr == ridges.NEIGHBOR_SEED) | (dir_arr == ridges.NEIGHBOR_STOP)
-        mask = gdal_utils.read_arr(mask, mgrid_n_xy) ^ mask
-        while mask.any():
-            colors[mask] = cidx % DIR_ARR_CMAP_IDXS
-            show_mask[mask] = True
-            # Expand
-            mask = gdal_utils.read_arr(mask, mgrid_n_xy)
-            cidx += 1
-    elif colls.dir_style == 1:
-        # Colors contract staring at "leaf"
-        show_mask[...] = False
-        mask = numpy.ones(dir_arr.shape, dtype=bool)
-        gdal_utils.write_arr(mask, mgrid_n_xy, False)
-        while mask.any():
-            colors[mask] = cidx % DIR_ARR_CMAP_IDXS
-            show_mask[mask] = True
-            # Contract
-            m = mask
-            mask = numpy.zeros(dir_arr.shape, dtype=bool)
-            gdal_utils.write_arr(mask, mgrid_n_xy, m)
-            cidx += 1
-    elif colls.dir_style == 2:
-        # Colors based on elevation
-        colors = lonlatalt[...,2]
-    else:
-        # All in same color
-        pass
+        colors = colors[show_mask]
+        print('dir_arr sorted in %d steps'%cidx)
 
-    colors = colors[show_mask]
-    print('dir_arr sorted in %d steps'%cidx)
+        # Invalid and seed points, points to them-self
+        vecs = dem_band.xy2lonlatalt(mgrid_n_xy) - lonlatalt
+        if USE_2D:
+            vecs = vecs[...,:2]
+        else:
+            # Suppress altitude as having problems with quiver() and different units
+            vecs[...,2] = 0
 
-    #TODO: Colors do not work in 3D-mode
-    if not USE_2D:
-        colors = None
+        if USE_2D:
+            fmt = {**DIR_ARR_FMT, **QUIVER_2D_FMT}
+        else:
+            fmt = DIR_ARR_FMT
 
-    # Show colored n_dir-s
-    quiver_list = colls.replace('dir_arr', colls.ax.
-            quiver(*pts[show_mask].T, *vecs[show_mask].T, colors, **fmt))
+        #TODO: Colors do not work in 3D-mode
+        if not USE_2D:
+            colors = None
+
+        # Show colored n_dir-s
+        colls.replace('dir_arr', colls.ax.
+                quiver(*pts[show_mask].T, *vecs[show_mask].T, colors, **fmt))
+    n_dir_markers(colls)
 
 def show_plot(dem_band, dir_arr, title=None):
     """Display matplotlib window"""
@@ -251,8 +272,10 @@ def show_plot(dem_band, dir_arr, title=None):
             AX_MARGIN / 2, AX_MARGIN / 2))
     labels = [coll.get_label() for coll in colls.get_collections()]
     visibility = [coll.get_visible() for coll in colls.get_collections()]
-    labels += DIR_STYLE_LABELS
-    visibility += [False] * len(DIR_STYLE_LABELS)
+    #TODO: Colors do not work in 3D-mode
+    if USE_2D:
+        labels += DIR_STYLE_LABELS
+        visibility += [False] * len(DIR_STYLE_LABELS)
     check = widgets.CheckButtons(rax, labels, visibility)
     check.on_clicked(colls.on_showhide)
 
