@@ -16,12 +16,14 @@ NODATA_FMT = dict(color='red', marker='o', label='NoData')
 PENDINGS_FMT = dict(color='yellow', marker='o', label='Pendings')
 SEEDS_FMT = dict(color='orange', marker='x', label='Seeds')
 STOPS_FMT = dict(color='orange', marker='+', label='Stops')
-LEAFS_FMT = dict(color='lightgreen', marker='.', label='Leafs')
-DIR_ARR_FMT = dict(label='dir_arr', cmap='viridis', alpha=.5)
+LEAFS_FMT = dict(color='lightgreen', marker='.', label='Leafs', visible=False)
+DIR_ARR_FMT = dict(label='dir_arr', cmap='viridis', alpha=.5, visible=False)
 DIR_ARR_CMAP_IDXS = 4
 NODES_FMT = dict(color='brown', marker='o', label='Nodes', alpha=.5)
+BRIDGES_FMT = dict(label='bridge_lines', cmap='viridis', alpha=.5)
 
 QUIVER_2D_FMT = dict(angles='xy', scale_units='xy', scale=1.2)
+BRIDGES_2D_FMT = QUIVER_2D_FMT.copy(); BRIDGES_2D_FMT['scale']=1.1
 
 USE_2D = True
 
@@ -252,6 +254,60 @@ def do_redraw(colls, dem_band, dir_arr):
     dist_arr = distance.get_distance(mgrid_xy, mgrid_n_xy)
     # Extract node bridges
     bridge_lines = get_bridge_lines(dist_arr)
+
+    #
+    # Vectors along node-bridges
+    #
+    def bridge_markers(colls):
+        """Direct vectors between nodes from the dir_arr graph"""
+        valid_mask = bridge_lines['next'] >= 0
+        bridges = bridge_lines[valid_mask]
+        colors = numpy.zeros(bridges.shape, dtype=int)
+        cidx = 0
+        if colls.dir_style == 0:
+            # Colors expand staring at "seed" (bridge_lines['next'] == -1)
+            mask = ~valid_mask
+            while mask.any():
+                mask = mask[bridge_lines['next']] & valid_mask
+                # Expand
+                colors[mask[valid_mask]] = cidx % DIR_ARR_CMAP_IDXS
+                cidx += 1
+        elif colls.dir_style == 1:
+            # Colors contract staring at "leaf"
+            mask = numpy.ones(bridge_lines.shape, dtype=bool)
+            mask[bridges['next']] = False
+            while mask.any():
+                colors[mask[valid_mask]] = cidx % DIR_ARR_CMAP_IDXS
+                # Contract
+                m = mask
+                mask = numpy.zeros(bridge_lines.shape, dtype=bool)
+                mask[bridges['next']] = m[valid_mask]
+                cidx += 1
+        elif colls.dir_style == 2:
+            # Colors based on elevation
+            if True:
+                # Hide leaf bridges
+                mask = numpy.zeros(bridge_lines.shape, dtype=bool)
+                mask[bridges['next']] = True
+                bridges = bridge_lines[mask & valid_mask]
+            colors = gdal_utils.read_arr(lonlatalt[...,2], bridges['x_y'])
+        else:
+            # Colors based on the bridge lengths
+            colors = bridges['dist']
+
+        print('bridge_lines sorted in %d steps, %d bridges'%(cidx, colors.size))
+
+        start_pts = gdal_utils.read_arr(pts, bridges['x_y'])
+        end_pts = gdal_utils.read_arr(pts, bridge_lines[bridges['next']]['x_y'])
+
+        if USE_2D:
+            fmt = {**BRIDGES_FMT, **BRIDGES_2D_FMT}
+        else:
+            fmt = BRIDGES_FMT
+
+        colls.replace('bridge_lines', colls.ax.
+                quiver(*start_pts.T, *(end_pts - start_pts).T, colors, **fmt))
+    bridge_markers(colls)
 
     #
     # Vectors along dir_arr
