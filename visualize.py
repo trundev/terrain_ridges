@@ -24,6 +24,7 @@ BRIDGES_FMT = dict(label='bridge_lines', cmap='viridis', alpha=.5)
 
 QUIVER_2D_FMT = dict(angles='xy', scale_units='xy', scale=1.2)
 BRIDGES_2D_FMT = QUIVER_2D_FMT.copy(); BRIDGES_2D_FMT['scale']=1.1
+SHOW_MIN_RANK = 2
 
 USE_2D = True
 
@@ -93,7 +94,7 @@ class collections:
                 if coll.get_label() == label:
                     coll.set_visible(not coll.get_visible())
                     break
-        pyplot.draw()
+        self.ax.figure.canvas.draw_idle()
 
 def do_redraw(colls, dem_band, dir_arr):
     """Generate matplotlib collections"""
@@ -255,6 +256,42 @@ def do_redraw(colls, dem_band, dir_arr):
     # Extract node bridges
     bridge_lines = get_bridge_lines(dist_arr)
 
+    # Isolate graph branches by iteratively trim the leaf graph-bridges until all pixels are processed
+    def rank_branches(dir_arr):
+        """Assign a branch-rank to each pixel"""
+        rank_arr = numpy.zeros(dir_arr.shape, dtype=int)
+        rank_arr[ridges.neighbor_is_invalid(dir_arr)] = -1
+        cur_rank = 0
+        unassigned_cnt = numpy.count_nonzero(rank_arr == 0)
+        while unassigned_cnt > 0:
+            cur_rank += 1
+            # Count the number of neighbors pointing to each pixel (within this rank)
+            n_num = numpy.zeros(dir_arr.shape, dtype=int)
+            for d in ridges.VALID_NEIGHBOR_DIRS:
+                n_xy = mgrid_n_xy[(dir_arr == d) & (rank_arr == 0)]
+                n = numpy.zeros_like(n_num)
+                gdal_utils.write_arr(n, n_xy, 1)
+                n_num += n
+            # Put -1 at invalid nodes, except the "real" seeds (to distinguish from the "leaves")
+            n_num[(rank_arr != 0) & (n_num == 0)] = -1
+
+            # Update 'rank_arr' along "leaf" branches
+            x_y = numpy.array(numpy.nonzero(n_num == 0)).T
+            print('Rank %d: Detected %d leaf branches...'%(cur_rank, x_y.shape[0]))
+            # Mask of all bridge intermediate pixels
+            bridge_mask = (n_num == 1) & ~ridges.neighbor_is_invalid(dir_arr)
+            while x_y.size:
+                gdal_utils.write_arr(rank_arr, x_y, cur_rank)
+                x_y = gdal_utils.read_arr(mgrid_n_xy, x_y)
+                mask = gdal_utils.read_arr(bridge_mask, x_y)
+                x_y = x_y[mask]
+
+            start_cnt = unassigned_cnt
+            unassigned_cnt = numpy.count_nonzero(rank_arr == 0)
+            print('  Assigned %d pixels'%(start_cnt - unassigned_cnt))
+        return rank_arr
+    rank_arr = rank_branches(dir_arr)
+
     #
     # Vectors along node-bridges
     #
@@ -265,23 +302,19 @@ def do_redraw(colls, dem_band, dir_arr):
         colors = numpy.zeros(bridges.shape, dtype=int)
         cidx = 0
         if colls.dir_style == 0:
+            # Colors based on the bridge-rank
+            colors = gdal_utils.read_arr(rank_arr, bridges['x_y'])
+            # Hide low-rank bridges
+            mask = colors >= SHOW_MIN_RANK
+            bridges = bridges[mask]
+            colors = colors[mask]
+        elif colls.dir_style == 1:
             # Colors expand staring at "seed" (bridge_lines['next'] == -1)
             mask = ~valid_mask
             while mask.any():
                 mask = mask[bridge_lines['next']] & valid_mask
                 # Expand
                 colors[mask[valid_mask]] = cidx % DIR_ARR_CMAP_IDXS
-                cidx += 1
-        elif colls.dir_style == 1:
-            # Colors contract staring at "leaf"
-            mask = numpy.ones(bridge_lines.shape, dtype=bool)
-            mask[bridges['next']] = False
-            while mask.any():
-                colors[mask[valid_mask]] = cidx % DIR_ARR_CMAP_IDXS
-                # Contract
-                m = mask
-                mask = numpy.zeros(bridge_lines.shape, dtype=bool)
-                mask[bridges['next']] = m[valid_mask]
                 cidx += 1
         elif colls.dir_style == 2:
             # Colors based on elevation
@@ -318,6 +351,11 @@ def do_redraw(colls, dem_band, dir_arr):
         colors = numpy.zeros(dir_arr.shape, dtype=int)
         cidx = 0
         if colls.dir_style == 0:
+            # Colors based on the bridge-rank
+            colors = rank_arr
+            # Hide low-rank pixels
+            show_mask[rank_arr < SHOW_MIN_RANK] = False
+        elif colls.dir_style == 1:
             # Colors expand staring at "seed" and "stop"
             show_mask[...] = False
             mask = (dir_arr == ridges.NEIGHBOR_SEED) | (dir_arr == ridges.NEIGHBOR_STOP)
@@ -327,19 +365,6 @@ def do_redraw(colls, dem_band, dir_arr):
                 show_mask[mask] = True
                 # Expand
                 mask = gdal_utils.read_arr(mask, mgrid_n_xy)
-                cidx += 1
-        elif colls.dir_style == 1:
-            # Colors contract staring at "leaf"
-            show_mask[...] = False
-            mask = numpy.ones(dir_arr.shape, dtype=bool)
-            gdal_utils.write_arr(mask, mgrid_n_xy, False)
-            while mask.any():
-                colors[mask] = cidx % DIR_ARR_CMAP_IDXS
-                show_mask[mask] = True
-                # Contract
-                m = mask
-                mask = numpy.zeros(dir_arr.shape, dtype=bool)
-                gdal_utils.write_arr(mask, mgrid_n_xy, m)
                 cidx += 1
         elif colls.dir_style == 2:
             # Colors based on elevation
