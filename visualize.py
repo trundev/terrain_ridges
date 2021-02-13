@@ -17,10 +17,11 @@ PENDINGS_FMT = dict(color='yellow', marker='o', label='Pendings')
 SEEDS_FMT = dict(color='orange', marker='x', label='Seeds')
 STOPS_FMT = dict(color='orange', marker='+', label='Stops')
 LEAFS_FMT = dict(color='lightgreen', marker='.', label='Leafs', visible=False)
-DIR_ARR_FMT = dict(label='dir_arr', cmap='viridis', alpha=.5, visible=False)
+DIR_ARR_FMT = dict(label='dir_arr', cmap='viridis', alpha=.5)
 DIR_ARR_CMAP_IDXS = 4
-NODES_FMT = dict(color='brown', marker='o', label='Nodes', alpha=.5)
-BRIDGES_FMT = dict(label='bridge_lines', cmap='viridis', alpha=.5)
+NODES_FMT = dict(color='brown', marker='o', label='Nodes', alpha=.5, visible=False)
+FORKS_FMT = dict(cmap='viridis', marker='x', label='Forks', alpha=.75)
+BRIDGES_FMT = dict(label='bridge_lines', cmap='viridis', alpha=.5, visible=False)
 
 QUIVER_2D_FMT = dict(angles='xy', scale_units='xy', scale=1.2)
 BRIDGES_2D_FMT = QUIVER_2D_FMT.copy(); BRIDGES_2D_FMT['scale']=1.1
@@ -260,6 +261,7 @@ def do_redraw(colls, dem_band, dir_arr):
     def rank_branches(dir_arr):
         """Assign a branch-rank to each pixel"""
         rank_arr = numpy.zeros(dir_arr.shape, dtype=int)
+        forks_arr = rank_arr.copy()
         rank_arr[ridges.neighbor_is_invalid(dir_arr)] = -1
         cur_rank = 0
         unassigned_cnt = numpy.count_nonzero(rank_arr == 0)
@@ -278,6 +280,7 @@ def do_redraw(colls, dem_band, dir_arr):
             # Update 'rank_arr' along "leaf" branches
             x_y = numpy.array(numpy.nonzero(n_num == 0)).T
             print('Rank %d: Detected %d leaf branches...'%(cur_rank, x_y.shape[0]))
+            gdal_utils.write_arr(forks_arr, x_y, cur_rank)
             # Mask of all bridge intermediate pixels
             bridge_mask = (n_num == 1) & ~ridges.neighbor_is_invalid(dir_arr)
             while x_y.size:
@@ -289,8 +292,13 @@ def do_redraw(colls, dem_band, dir_arr):
             start_cnt = unassigned_cnt
             unassigned_cnt = numpy.count_nonzero(rank_arr == 0)
             print('  Assigned %d pixels'%(start_cnt - unassigned_cnt))
-        return rank_arr
-    rank_arr = rank_branches(dir_arr)
+        return rank_arr, forks_arr
+    rank_arr, forks_arr = rank_branches(dir_arr)
+
+    # Markers at "forks" (pixels where branches start)
+    fork_pts = pts[forks_arr > SHOW_MIN_RANK]
+    colls.replace('forks', colls.ax.
+            scatter(*fork_pts.T, c=forks_arr[forks_arr > SHOW_MIN_RANK], **FORKS_FMT))
 
     #
     # Vectors along node-bridges
