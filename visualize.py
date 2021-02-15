@@ -27,6 +27,7 @@ QUIVER_2D_FMT = dict(angles='xy', scale_units='xy', scale=1.2)
 BRIDGES_2D_FMT = QUIVER_2D_FMT.copy(); BRIDGES_2D_FMT['scale']=1.1
 SHOW_MIN_RANK = 2
 
+IDX_COORDS = False
 USE_2D = True
 
 DIR_STYLE_LABELS = ['dir style 0', 'dir style 1']
@@ -103,6 +104,8 @@ def do_redraw(colls, dem_band, dir_arr):
     shape = dem_band.get_elevation(True).shape
     mgrid_xy = numpy.moveaxis(numpy.mgrid[:shape[0],:shape[1]], 0, -1)
     lonlatalt = dem_band.xy2lonlatalt(mgrid_xy)
+    if IDX_COORDS:
+        lonlatalt[...,:2] = mgrid_xy
 
     def nodata_markers(colls):
         # When DEM contains no-data altitudes (NaN), plot_surface() may not render anything
@@ -407,7 +410,7 @@ def do_redraw(colls, dem_band, dir_arr):
         print('dir_arr sorted in %d steps, %d pixels'%(cidx, colors.size))
 
         # Invalid and seed points, points to them-self
-        vecs = dem_band.xy2lonlatalt(mgrid_n_xy) - lonlatalt
+        vecs = gdal_utils.read_arr(lonlatalt, mgrid_n_xy) - lonlatalt
         if USE_2D:
             vecs = vecs[...,:2]
         else:
@@ -433,15 +436,20 @@ def show_plot(dem_band, dir_arr, title=None):
             projection=None if USE_2D else '3d')
     if title is not None:
         ax.set_title(title)
+    if IDX_COORDS:
+        # This does nothing in '3d' projection
+        ax.invert_yaxis()
 
     # Convert all points in the DEM buffer to 2D array of lon-lat-alt values (3D array)
     shape = dem_band.get_elevation(True).shape
     mgrid_xy = numpy.moveaxis(numpy.mgrid[:shape[0],:shape[1]], 0, -1)
-    lonlatalt = dem_band.xy2lonlatalt(mgrid_xy)
 
     if USE_2D:
         ax.set_aspect('equal')
     else:
+        lonlatalt = dem_band.xy2lonlatalt(mgrid_xy)
+        if IDX_COORDS:
+            lonlatalt[...,:2] = mgrid_xy
         set_aspect(ax, lonlatalt)
 
     colls = collections(ax, do_redraw, dem_band, dir_arr)
