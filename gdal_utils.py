@@ -14,16 +14,24 @@ except ImportError as ex:
 #
 def write_arr(arr, x_y, val):
     """Put data to multiple indices in array"""
-    if x_y.ndim < 3:
+    # Force numpy "Basic Indexing", note that '[x_y]' will trigger "Advanced Indexing"
+    if numpy.isscalar(val):
         arr[tuple(x_y.T)] = val     # Performance optimization
-        return
-    # Avoid numpy "Advanced Indexing"
-    arr[tuple(x_y.T)] = numpy.array(val, dtype=arr.dtype).T
+    elif arr.ndim <= x_y.shape[-1]:
+        arr[tuple(x_y.T)] = val.T   # Performance optimization
+    else:
+        # Double-transpose trick does not work when 'arr' has extra dimentions
+        x_y = numpy.moveaxis(x_y, -1, 0)
+        arr[tuple(x_y)] = val
 
 def read_arr(arr, x_y):
     """Get multiple indices from array"""
-    # Force numpy "Basic Indexing", note that '[x_y]' will trigger "Advanced Indexing"
-    return arr[tuple(x_y.T)].T
+    # Avoid numpy "Advanced Indexing"
+    if arr.ndim <= x_y.shape[-1]:
+        return arr[tuple(x_y.T)].T  # Performance optimization
+    # Double-transpose trick does not work when 'arr' has extra dimentions
+    x_y = numpy.moveaxis(x_y, -1, 0)
+    return arr[tuple(x_y)]
 
 #
 # GDAL helpers
@@ -112,7 +120,7 @@ class gdal_dem_band(gdal_dataset):
                 self.scale = 1
             self.nodata_val = self.band.GetNoDataValue()
             if self.nodata_val is not None:
-                self.nodata_val = int(self.nodata_val)
+                self.nodata_val = numpy.array(self.nodata_val, dtype=_get_dtype(self.band))
 
     def load(self, xstart=0, ystart=0):
         """Load raster DEM data"""
@@ -133,7 +141,7 @@ class gdal_dem_band(gdal_dataset):
         # Replace the GDAL "NoDataValue" with NaN
         if self.nodata_val is not None:
             # Convert 'dem_buf' to float (specifically xform-type) to allow NaN assignment
-            if self.dem_buf.dtype.kind != 'f':
+            if self.dem_buf.dtype.kind != 'f' or not self.dem_buf.flags.writeable:
                 alt_f = numpy.array(self.dem_buf, dtype=self.xform.dtype) 
                 alt_f[self.dem_buf == self.nodata_val] = numpy.nan
                 self.dem_buf = alt_f
@@ -222,7 +230,9 @@ class geod_distance:
         lonlat = lonlatalt[...,:2].reshape([*lonlatalt.shape[:-2], -1])
         lonlat = lonlat.T
         _, _, dist = self.geod.inv(*lonlat)
-        dist = dist.T
+        # The pyproj.Geod.inv() distance can be a scalar
+        if not numpy.isscalar(dist):
+            dist = dist.T
         # Adjust distance with the altitude displacement
         return numpy.sqrt(dist*dist + disp*disp)
 
