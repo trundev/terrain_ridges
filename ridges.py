@@ -435,9 +435,9 @@ def combine_lines(result_lines, dir_arr, min_len=0):
 def keep_arrays(prefix, arr_slices):
     """Store snapshots of multiple arrays"""
     for arr_name in arr_slices:
-        arr = arr_slices[arr_name][0]
-        slices = arr_slices[arr_name][1:]
-        for sl in slices:
+        arr = arr_slices[arr_name]
+        slices = arr.dtype.fields
+        for sl in [None] if slices is None else slices:
             if sl is None:
                 # Single slice - complete array
                 arr_sl_name = arr_name
@@ -449,13 +449,13 @@ def keep_arrays(prefix, arr_slices):
             print('Keeping snapshot of', arr_sl_name, arr_sl.shape, ':', fname)
             numpy.save(fname, arr_sl)
 
-def restore_arrays(prefix, arr_slices, restore=False):
+def restore_arrays(prefix, arr_slices):
     """Load snapshots of multiple arrays"""
     res_list = []
     for arr_name in arr_slices:
         dtype = arr_slices[arr_name]
         arr = None
-        for sl in dtype:
+        for sl in [None] if dtype is None else dtype:
             if sl is None:
                 # Single slice - complete array
                 arr_sl_name = arr_name
@@ -483,8 +483,8 @@ def restore_arrays(prefix, arr_slices, restore=False):
 def keep_result_lines_dir_arr(prefix, result_lines, dir_arr):
     """Store snapshots of the 'result_lines' and 'dir_arr' arrays"""
     keep_arrays(prefix, {
-            'result_lines': (result_lines, 'x_y', 'dist'),
-            'dir_arr': (dir_arr, 'n_dir', 'dist'),
+            'result_lines': result_lines,
+            'dir_arr': dir_arr,
     })
 
 def restore_result_lines_dir_arr(prefix):
@@ -555,9 +555,9 @@ def main(argv):
         print('Traced through %d/%d points, %d sec'%(numpy.count_nonzero(~neighbor_is_invalid(dir_arr)), dir_arr.size, duration))
 
         if KEEP_SNAPSHOT:
-            keep_arrays(src_filename + '-1-', {'dir_arr': (dir_arr, None),})
+            keep_arrays(src_filename + '-1-', {'dir_arr': dir_arr,})
     elif RESUME_FROM_SNAPSHOT == 1:
-        dir_arr, = restore_arrays(src_filename + '-1-', {'dir_arr': (None, ),})
+        dir_arr, = restore_arrays(src_filename + '-1-', {'dir_arr': None,})
 
     #
     # Flip the longest lines ending in each 'seed' and recalculate the 'dist' members
