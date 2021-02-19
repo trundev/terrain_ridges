@@ -239,11 +239,10 @@ def get_mgrid(shape):
     # The coordinates must be in the last dimension
     return numpy.moveaxis(mgrid, 0, -1)
 
-def calculate_dist_arr(distance, dir_arr):
+def calculate_dist_arr(distance, mgrid_n_xy, dir_arr):
     """Generate 'dist_arr' from the 'dir_arr'"""
     # Use a helper array, where each element points to it-self
     mgrid_xy = get_mgrid(dir_arr.shape)
-    mgrid_n_xy = neighbor_xy_safe(mgrid_xy, dir_arr)
     dist_arr = distance.get_distance(mgrid_xy, mgrid_n_xy)
     del mgrid_xy
     # Keep NaN-s where there is no neighbors (there are 0-s, because of neighbor_xy_safe)
@@ -280,9 +279,8 @@ def calculate_dist_arr(distance, dir_arr):
 
     return dist_arr
 
-def calculate_result_lines(dir_arr, dist_arr):
+def calculate_result_lines(mgrid_n_xy, dir_arr, dist_arr):
     """Generate 'result_lines' from the 'dir_arr' and 'dist_arr'"""
-    mgrid_n_xy = neighbor_xy_safe(get_mgrid(dir_arr.shape), dir_arr)
     # Isolate the 'leaf' pixels and create the 'result_lines' out of them
     all_leafs = numpy.ones(dir_arr.shape, dtype=bool)
     gdal_utils.write_arr(all_leafs, mgrid_n_xy, False)
@@ -296,12 +294,12 @@ def calculate_result_lines(dir_arr, dist_arr):
     result_lines = numpy.take(result_lines, argsort)
     return result_lines
 
-def flip_line(dir_arr, x_y):
+def flip_line(mgrid_n_xy, dir_arr, x_y):
     """Flip all 'n_dir'-s along a line"""
     prev_dir = gdal_utils.read_arr(dir_arr, x_y)
     gdal_utils.write_arr(dir_arr, x_y, NEIGHBOR_STOP)
     while True:
-        n_xy = neighbor_xy(x_y, prev_dir)
+        n_xy = gdal_utils.read_arr(mgrid_n_xy, x_y)
         n_dir = gdal_utils.read_arr(dir_arr, n_xy)
         gdal_utils.write_arr(dir_arr, n_xy, neighbor_flip(prev_dir))
         if neighbor_is_invalid(n_dir):
@@ -311,11 +309,8 @@ def flip_line(dir_arr, x_y):
         x_y = n_xy
         prev_dir = n_dir
 
-def flip_seed_lines(dir_arr, dist_arr):
+def flip_seed_lines(mgrid_n_xy, dir_arr, dist_arr):
     """Create a new 'dir_arr', where all the longest lines ending to any of "seed"-s are flipped"""
-    # Use a helper array, where each element points to its neighbor
-    mgrid_n_xy = neighbor_xy_safe(get_mgrid(dir_arr.shape), dir_arr)
-
     # Isolate all the 'leaf' pixels
     all_leafs = numpy.zeros(dir_arr.shape, dtype=bool)
     gdal_utils.write_arr(all_leafs, mgrid_n_xy, True)
@@ -326,7 +321,7 @@ def flip_seed_lines(dir_arr, dist_arr):
         # Obtain the 'leaf' with longest 'dist' then flip it
         flat_idx = numpy.ma.array(dist_arr, mask=all_leafs).argmax()
         x_y = numpy.array(numpy.unravel_index(flat_idx, dir_arr.shape))
-        s_xy = flip_line(dir_arr, x_y)
+        s_xy = flip_line(mgrid_n_xy, dir_arr, x_y)
         print('  Flipped longest line from %s to %s, dist %d'%(x_y, s_xy, gdal_utils.read_arr(dist_arr, x_y)))
 
         # Mask-out all pixels descending from this 'seed'
@@ -344,15 +339,14 @@ def flip_seed_lines(dir_arr, dist_arr):
 #
 # Third stage - combine lines
 #
-def reduced_distance(dir_arr, x_y):
+def reduced_distance(mgrid_n_xy, dir_arr, x_y):
     """Calculate trace distance upto the next NEIGHBOR_STOP"""
     start_dist = gdal_utils.read_arr(dir_arr['dist'], x_y)
     result = numpy.full_like(start_dist, numpy.nan)
     pend_mask = numpy.isnan(result)
     res_mask = numpy.empty_like(pend_mask)
     while True:
-        n_dir = gdal_utils.read_arr(dir_arr['n_dir'], x_y)
-        done_mask = neighbor_is_invalid(n_dir)
+        done_mask = neighbor_is_invalid(gdal_utils.read_arr(dir_arr['n_dir'], x_y))
         if done_mask.any():
             # Some lines are traced to their ends, keep their distances in 'result'
             dist = gdal_utils.read_arr(dir_arr['dist'], x_y[done_mask])
@@ -365,23 +359,22 @@ def reduced_distance(dir_arr, x_y):
             done_mask = numpy.logical_not(done_mask)
             pend_mask[pend_mask] = done_mask
             x_y = x_y[done_mask]
-            n_dir = n_dir[done_mask]
             if not pend_mask.any():
                 assert not numpy.isnan(result).any(), \
                         'Failed to calculate distance at: %s'%(numpy.nonzero(numpy.isnan(result)))
                 return result
-        x_y = neighbor_xy(x_y, n_dir)
+        x_y = gdal_utils.read_arr(mgrid_n_xy, x_y)
 
-def reduced_distance_opt(dir_arr, x_y):
+def reduced_distance_opt(mgrid_n_xy, dir_arr, x_y):
     """Calculate trace distances, optimized by splitting 'x_y' into chunks"""
     CHUNK_SIZE = 10000
     new_dist = numpy.empty(0, dtype=dir_arr['dist'].dtype)
     for start in range(0, x_y.shape[0], CHUNK_SIZE):
-        n_dist = reduced_distance(dir_arr, x_y[start:start + CHUNK_SIZE])
+        n_dist = reduced_distance(mgrid_n_xy, dir_arr, x_y[start:start + CHUNK_SIZE])
         new_dist = numpy.concatenate((new_dist, n_dist))
     return new_dist
 
-def combine_lines(result_lines, dir_arr, min_len=0):
+def combine_lines(result_lines, mgrid_n_xy, dir_arr, min_len=0):
     """Create polylines from previously generated ridges or valleys"""
     # Remove the lines shorter than min_len
     idx = numpy.searchsorted(result_lines['dist'], min_len)
@@ -404,12 +397,11 @@ def combine_lines(result_lines, dir_arr, min_len=0):
         start_xy = x_y
         while True:
             pline = numpy.append(pline, [x_y], axis=0)
-            n_dir = gdal_utils.read_arr(dir_arr['n_dir'], x_y)
-            if neighbor_is_invalid(n_dir):
+            if neighbor_is_invalid(gdal_utils.read_arr(dir_arr['n_dir'], x_y)):
                 break
             # Stop other lines from overlapping that one
             gdal_utils.write_arr(dir_arr['n_dir'], x_y, NEIGHBOR_STOP)
-            x_y = neighbor_xy(x_y, n_dir)
+            x_y = gdal_utils.read_arr(mgrid_n_xy, x_y)
         polylines.append({'dist': dist, 'x_y': start_xy, 'line': pline})
         if not result_lines.size:
             break
@@ -418,7 +410,7 @@ def combine_lines(result_lines, dir_arr, min_len=0):
         print('  Update remaining %d lines: mid/min len %d/%d'%(
                 result_lines.shape[0], result_lines[result_lines.shape[0] // 2]['dist'], result_lines[0]['dist']))
         # Run distance reducing in parallel
-        new_dist = reduced_distance_opt(dir_arr, result_lines['x_y'])
+        new_dist = reduced_distance_opt(mgrid_n_xy, dir_arr, result_lines['x_y'])
         mask = new_dist != result_lines['dist']
         if mask.any():
             assert (new_dist[mask] < result_lines[mask]['dist']).all(), \
@@ -577,21 +569,27 @@ def main(argv):
 
         start = time.time()
 
+        # Use a helper array, where each element points to its neighbor
+        mgrid_n_xy = neighbor_xy_safe(get_mgrid(dir_arr.shape), dir_arr)
+
         # flip_seed_lines() needs the 'dist_arr'
         distance = gdal_utils.geod_distance(dem_band) if 0 == DISTANCE_METHOD \
                 else gdal_utils.tm_distance(dem_band) if 1 == DISTANCE_METHOD \
                 else gdal_utils.draft_distance(dem_band)
-        dist_arr = calculate_dist_arr(distance, dir_arr)
+        dist_arr = calculate_dist_arr(distance, mgrid_n_xy, dir_arr)
 
         # Actual flip
-        dir_arr = flip_seed_lines(dir_arr, dist_arr)
+        dir_arr = flip_seed_lines(mgrid_n_xy, dir_arr, dist_arr)
         if dir_arr is None:
             print('Error: Failed to flip longest lines', file=sys.stderr)
             return 2
 
+        # Regenerate the helper array after flip_seed_lines()
+        mgrid_n_xy = neighbor_xy_safe(get_mgrid(dir_arr.shape), dir_arr)
+
         # Calculate the updated 'dist_arr' and 'result_lines'
-        dist_arr = calculate_dist_arr(distance, dir_arr)
-        result_lines = calculate_result_lines(dir_arr, dist_arr)
+        dist_arr = calculate_dist_arr(distance, mgrid_n_xy, dir_arr)
+        result_lines = calculate_result_lines(mgrid_n_xy, dir_arr, dist_arr)
 
         # Combine dir_arr and dist_arr for convenience in further processing
         dir_dist_arr = numpy.empty(dir_arr.shape, dtype=DIR_DIST_DTYPE)
@@ -614,7 +612,10 @@ def main(argv):
     #
     start = time.time()
 
-    polylines = combine_lines(result_lines, dir_dist_arr, result_lines[-1]['dist'] / 20)
+    # Use a helper array, where each element points to its neighbor
+    mgrid_n_xy = neighbor_xy_safe(get_mgrid(dir_dist_arr.shape), dir_dist_arr['n_dir'])
+
+    polylines = combine_lines(result_lines, mgrid_n_xy, dir_dist_arr, result_lines[-1]['dist'] / 20)
     if not polylines:
         print('Error: Failed to combine lines', file=sys.stderr)
         return 2
