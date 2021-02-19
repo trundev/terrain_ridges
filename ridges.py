@@ -42,6 +42,7 @@ DEF_LAYER_OPTIONS = []
 BYDVR_LAYER_OPTIONS = {
     'LIBKML': ['ADD_REGION=YES', 'FOLDER=YES'],
 }
+WRAP_LONGITUDE = False      # Experimental: To be used with cylindrically wrapped DEMs only
 
 #
 # Internal data-types, mostly for keep/resume support
@@ -97,6 +98,18 @@ def neighbor_is_invalid(neighbor_dir):
     """Return mask of where the neighbor directions are invalid"""
     return neighbor_dir > NEIGHBOR_LAST_VALID
 
+def wrap_around(dem_band, x_y):
+    #TODO: Use wrap-flags to be added in future
+    if WRAP_LONGITUDE:
+        shape = dem_band.get_elevation(True).shape
+        mask = x_y[...,0] < 0
+        if mask.any():
+            x_y[...,0][mask] += shape[0]
+        mask = x_y[...,0] >= shape[0]
+        if mask.any():
+            x_y[...,0][mask] -= shape[0]
+    return x_y
+
 #
 # First stage - trace ridges
 #
@@ -131,6 +144,10 @@ def process_neighbors(dem_band, dir_arr, x_y):
     # Filter out of bounds pixels
     mask = dem_band.in_bounds(n_xy)
     if not mask.all():
+        # Check for wrap-around(s) and update mask
+        n_xy[~mask] = wrap_around(dem_band, n_xy[~mask])
+        mask = dem_band.in_bounds(n_xy)
+        # Remove out of bounds pixels
         n_xy = n_xy[mask]
         n_dir = n_dir[mask]
     # The lines can only pass-thru inner DEM pixels, the boundary ones do split
@@ -571,6 +588,7 @@ def main(argv):
 
         # Use a helper array, where each element points to its neighbor
         mgrid_n_xy = neighbor_xy_safe(get_mgrid(dir_arr.shape), dir_arr)
+        mgrid_n_xy = wrap_around(dem_band, mgrid_n_xy)
 
         # flip_seed_lines() needs the 'dist_arr'
         distance = gdal_utils.geod_distance(dem_band) if 0 == DISTANCE_METHOD \
@@ -586,6 +604,7 @@ def main(argv):
 
         # Regenerate the helper array after flip_seed_lines()
         mgrid_n_xy = neighbor_xy_safe(get_mgrid(dir_arr.shape), dir_arr)
+        mgrid_n_xy = wrap_around(dem_band, mgrid_n_xy)
 
         # Calculate the updated 'dist_arr' and 'result_lines'
         dist_arr = calculate_dist_arr(distance, mgrid_n_xy, dir_arr)
@@ -614,6 +633,8 @@ def main(argv):
 
     # Use a helper array, where each element points to its neighbor
     mgrid_n_xy = neighbor_xy_safe(get_mgrid(dir_dist_arr.shape), dir_dist_arr['n_dir'])
+    mgrid_n_xy = wrap_around(dem_band, mgrid_n_xy)
+    assert dem_band.in_bounds(mgrid_n_xy).all(), 'Out-of-bounds coordinates in mgrid_n_xy'
 
     polylines = combine_lines(result_lines, mgrid_n_xy, dir_dist_arr, result_lines[-1]['dist'] / 20)
     if not polylines:
