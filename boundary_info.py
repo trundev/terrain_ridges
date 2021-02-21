@@ -145,6 +145,7 @@ def create_geom_by_mask(dem_band, dst_layer, geom_mask, outside, name_fmt, style
     # Prepare the "expand mask" tool
     expand = expand_mask(geom_mask.shape, outside)
 
+    num_pixels = numpy.count_nonzero(geom_mask)
     num_geometries = 0
     num_islands = 0
     while geom_mask.any():
@@ -183,8 +184,8 @@ def create_geom_by_mask(dem_band, dst_layer, geom_mask, outside, name_fmt, style
         geom.create()
         num_geometries += 1
 
-    print('Created %d polygons, %d islands inside, %d sec'%(
-            num_geometries, num_islands, time.time() - start))
+    print('  Created %d polygons from %d pixels, %d islands inside, %d sec'%(
+            num_geometries, num_pixels, num_islands, time.time() - start))
     return True
 
 def create_boundary_geom(dem_band, dst_layer):
@@ -232,8 +233,10 @@ def create_info_geometries(dem_band, dst_ds, eval_str=None):
         geom_mask = eval(eval_str, None, {"A": dem_band.get_elevation(True)})
         name_fmt = 'Calc "%s": {0} at {1[0]},{1[1]}'%eval_str
 
-    if not create_geom_by_mask(dem_band, dst_layer, geom_mask, False, name_fmt, DEM_NODATA_FEATURE_STYLE):
-        print('Warnig: Unable to create "NoDataValue" geometries', file=sys.stderr)
+    if geom_mask.any():
+        print('Creating', eval_str if eval_str else 'NoDataValue', 'polygons')
+        if not create_geom_by_mask(dem_band, dst_layer, geom_mask, False, name_fmt, DEM_NODATA_FEATURE_STYLE):
+            print('Warnig: Unable to create "NoDataValue" geometries', file=sys.stderr)
 
     return dst_layer
 
@@ -250,22 +253,38 @@ def create_dir_arr_geometries(dem_band, dir_arr, dst_ds):
 
     dst_layer.create_field('Name', gdal_utils.OFTString)    # KML <name>
 
+    #
+    # Helper arrays
+    #
     # Helper array, where each pixel contains the coordinates of its neighbor
     mgrid_n_xy = ridges.neighbor_xy_safe(ridges.get_mgrid(dir_arr.shape), dir_arr)
 
-    # Isolate "seed"/"stop" pixels
-    geom_mask = (dir_arr == ridges.NEIGHBOR_SEED) | (dir_arr == ridges.NEIGHBOR_STOP)
-    bare_mask = geom_mask.copy()
-    gdal_utils.write_arr(bare_mask, mgrid_n_xy[~bare_mask], False)
-    geom_mask ^= bare_mask
-    seed_mask = geom_mask.copy()
+    # Count the number of neighbors pointing to each pixel
+    n_num = numpy.zeros(dir_arr.shape, dtype=int)
+    n = numpy.empty_like(n_num)
+    for n_dir in ridges.VALID_NEIGHBOR_DIRS:
+        arr = mgrid_n_xy[dir_arr == n_dir]
+        n.fill(0)
+        gdal_utils.write_arr(n, arr, 1)
+        n_num += n
+    del n
+    # Put -1 at invalid nodes, except the "real" seeds (distinguish from the "leafs")
+    n_num[ridges.neighbor_is_invalid(dir_arr) & (n_num == 0)] = -1
 
+    print('Creating "Seed" polygons')
+
+    # Isolate "real-seed" pixels
+    geom_mask = ridges.neighbor_is_invalid(dir_arr) & (n_num > 0)
+    seed_mask = geom_mask.copy()
     if not create_geom_by_mask(dem_band, dst_layer, geom_mask, False,
             'Seeds: {0} at {1[0]},{1[1]}',
             DEM_SEED_FEATURE_STYLE):
         print('Warnig: Unable to create "leaf" geometries', file=sys.stderr)
 
-    if not create_geom_by_mask(dem_band, dst_layer, bare_mask, False,
+    # Isolate "seed"/"stop" pixels ("bare-seed" only)
+    geom_mask = (dir_arr == ridges.NEIGHBOR_SEED) | (dir_arr == ridges.NEIGHBOR_STOP)
+    geom_mask &= ~seed_mask
+    if not create_geom_by_mask(dem_band, dst_layer, geom_mask, False,
             'Bare seeds: {0} at {1[0]},{1[1]}',
             DEM_BSEED_FEATURE_STYLE):
         print('Warnig: Unable to create "leaf" geometries', file=sys.stderr)
@@ -281,6 +300,7 @@ def create_dir_arr_geometries(dem_band, dir_arr, dst_ds):
 
     dst_layer.create_field('Name', gdal_utils.OFTString)    # KML <name>
 
+    print('Creating "Seed-coverage" polygons: total %d regions'%(numpy.count_nonzero(seed_mask)))
     while seed_mask.any():
         # Select a single "seed" pixel
         s_xy = numpy.array(numpy.unravel_index(seed_mask.argmax(), seed_mask.shape))
@@ -303,11 +323,12 @@ def create_dir_arr_geometries(dem_band, dir_arr, dst_ds):
 
         n_seeds = numpy.count_nonzero(seed_mask)
         if n_seeds % 10 == 0:
-            print('Seeds left %d'%n_seeds)
+            print('  Seeds left %d'%n_seeds)
 
     #
     # Create the "Leafs" OGR layer
     #
+    print('Creating "Leaf" polygons')
     dst_layer = gdal_utils.gdal_vect_layer.create(dst_ds, 'dir_arr / Leafs',
             srs=dem_band.get_spatial_ref(), geom_type=gdal_utils.wkbPolygon)
     if dst_layer is None:
@@ -317,9 +338,7 @@ def create_dir_arr_geometries(dem_band, dir_arr, dst_ds):
     dst_layer.create_field('Name', gdal_utils.OFTString)    # KML <name>
 
     # Isolate "leaf" pixels
-    geom_mask = numpy.ones(dir_arr.shape, dtype=bool)
-    gdal_utils.write_arr(geom_mask, mgrid_n_xy, False)
-
+    geom_mask = n_num == 0
     if not create_geom_by_mask(dem_band, dst_layer, geom_mask, False,
             'Leafs: {0} at {1[0]},{1[1]}',
             DEM_LEAF_FEATURE_STYLE):
@@ -328,16 +347,7 @@ def create_dir_arr_geometries(dem_band, dir_arr, dst_ds):
     #
     # Create multiple "Nodes" OGR layers
     #
-    # Count the number of neighbors pointing to each pixel
-    n_num = numpy.zeros(dir_arr.shape, dtype=int)
-    n = numpy.empty_like(n_num)
-    for n_dir in ridges.VALID_NEIGHBOR_DIRS:
-        arr = mgrid_n_xy[dir_arr == n_dir]
-        n.fill(0)
-        gdal_utils.write_arr(n, arr, 1)
-        n_num += n
-    del n
-    print('Total %d/%d nodes, max. range %d'%(
+    print('Creating "Node" polygons: total %d/%d nodes, max. range %d'%(
             numpy.count_nonzero(n_num > 1), n_num.size, n_num.max()))
 
     # Add points where more than 2 neighbors pointing
