@@ -301,6 +301,7 @@ def create_dir_arr_geometries(dem_band, dir_arr, dst_ds):
     dst_layer.create_field('Name', gdal_utils.OFTString)    # KML <name>
 
     print('Creating "Seed-coverage" polygons: total %d regions'%(numpy.count_nonzero(seed_mask)))
+    n_leaf_only = 0
     while seed_mask.any():
         # Select a single "seed" pixel
         s_xy = numpy.array(numpy.unravel_index(seed_mask.argmax(), seed_mask.shape))
@@ -312,9 +313,17 @@ def create_dir_arr_geometries(dem_band, dir_arr, dst_ds):
         # Select the neighbors pointing to the masked pixels by using 'mgrid_n_xy'
         # The initial mask must be removed as it will pass thru - its 'mgrid_n_xy' points to them-self
         mask = gdal_utils.read_arr(geom_mask, mgrid_n_xy) ^ geom_mask
+        leaf_only = True
         while mask.any():
+            # Detect "leaf-only" regions
+            if leaf_only and (n_num[mask] > 1).any():
+                leaf_only = False
             geom_mask |= mask
             mask = gdal_utils.read_arr(mask, mgrid_n_xy)
+        # Drop "leaf-only" regions
+        if leaf_only:
+            n_leaf_only += 1
+            continue
 
         if not create_geom_by_mask(dem_band, dst_layer, geom_mask, True,
                 'Seed %d,%d coverage: {0}'%(s_xy[0], s_xy[1]),
@@ -323,7 +332,7 @@ def create_dir_arr_geometries(dem_band, dir_arr, dst_ds):
 
         n_seeds = numpy.count_nonzero(seed_mask)
         if n_seeds % 10 == 0:
-            print('  Seeds left %d'%n_seeds)
+            print('  Seeds left %d, skipped %d leaf-only regions'%(n_seeds, n_leaf_only))
 
     #
     # Create the "Leafs" OGR layer
