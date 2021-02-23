@@ -32,8 +32,9 @@ KEEP_SNAPSHOT = True
 RESUME_FROM_SNAPSHOT = 0    # Currently 0 to 3
 # GDAL layer creation options
 DEF_LAYER_OPTIONS = []
+MIN_LOD_PIXELS_PREFIX = 'REGION_MIN_LOD_PIXELS='
 BYDVR_LAYER_OPTIONS = {
-    'LIBKML': ['ADD_REGION=YES', 'FOLDER=YES'],
+    'LIBKML': ['ADD_REGION=YES', 'FOLDER=YES', MIN_LOD_PIXELS_PREFIX],
 }
 
 # Keep each branch-line one pixes away from its parent
@@ -460,11 +461,12 @@ class dst_layer_mgr:
     """Destination layer manager"""
     layer_set = {}
 
-    def __init__(self, dst_ds, spatial_ref, valleys, multi_layer):
+    def __init__(self, dst_ds, spatial_ref, branch_lines, valleys, multi_layer):
         self.dst_ds = dst_ds
         self.spatial_ref = spatial_ref
         self.id_fmt = VECTOR_LAYER_NAME(valleys)
         self.multi_layer = multi_layer
+        self.max_level = round(get_zoom_level(spatial_ref, branch_lines['area'].max()))
 
     def delete_all(self):
         """Delete all existing layers"""
@@ -474,9 +476,9 @@ class dst_layer_mgr:
 
     def get_layer(self, branch):
         """Obtain/create layer for specific geometry"""
-        # Select layer ID and chceck if it's already created
+        # Select layer ID and check if it's already created
+        level = round(get_zoom_level(self.spatial_ref, branch['area']))
         if self.multi_layer:
-            level = round(get_zoom_level(self.spatial_ref, branch['area']))
             layer_id = self.id_fmt + '_level%d'%level
             layer_options = ['NAME=' + self.id_fmt + ' - level %d'%level]
         else:
@@ -490,6 +492,10 @@ class dst_layer_mgr:
         bydrv_options = BYDVR_LAYER_OPTIONS.get(self.dst_ds.get_drv_name())
         if bydrv_options:
             layer_options += bydrv_options
+        if MIN_LOD_PIXELS_PREFIX in layer_options:
+            min_lod_pixels_idx = layer_options.index(MIN_LOD_PIXELS_PREFIX)
+            layer_options[min_lod_pixels_idx] = MIN_LOD_PIXELS_PREFIX + str(256 << (level - self.max_level))
+
         # Create the layer
         dst_layer = gdal_utils.gdal_vect_layer.create(self.dst_ds,
                 layer_id,
@@ -726,7 +732,7 @@ def main(argv):
         acc_area_arr = accumulate_pixel_coverage(area_arr, mgrid_n_xy)
         del area_arr
 
-        layer_mgr = dst_layer_mgr(dst_ds, dem_band.get_spatial_ref(), valleys, multi_layer)
+        layer_mgr = dst_layer_mgr(dst_ds, dem_band.get_spatial_ref(), branch_lines, valleys, multi_layer)
         # Delete existing layers
         if truncate:
             layer_mgr.delete_all()
