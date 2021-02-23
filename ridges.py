@@ -32,6 +32,11 @@ def VECTOR_FEATURE_STYLE(valleys): return 'PEN(c:#0000FF,w:2px)' if valleys else
 
 KEEP_SNAPSHOT = True
 RESUME_FROM_SNAPSHOT = 0    # Currently 0 to 2
+# GDAL layer creation options
+DEF_LAYER_OPTIONS = []
+BYDVR_LAYER_OPTIONS = {
+    'LIBKML': ['ADD_REGION=YES', 'FOLDER=YES'],
+}
 
 #
 # Internal data-types, mostly for keep/resume support
@@ -620,9 +625,16 @@ def main(argv):
             for i in reversed(range(dst_ds.get_layer_count())):
                 print('  Deleting layer', gdal_utils.gdal_vect_layer(dst_ds, i).get_name())
                 dst_ds.delete_layer(i)
+
         # Create new one
-        dst_layer = gdal_utils.gdal_vect_layer.create(dst_ds, VECTOR_LAYER_NAME(valleys),
-                srs=dem_band.get_spatial_ref(), geom_type=gdal_utils.wkbLineString)
+        layer_options = DEF_LAYER_OPTIONS
+        bydrv_options = BYDVR_LAYER_OPTIONS.get(dst_ds.get_drv_name())
+        if bydrv_options:
+            layer_options += bydrv_options
+        dst_layer = gdal_utils.gdal_vect_layer.create(dst_ds,
+                VECTOR_LAYER_NAME(valleys),
+                srs=dem_band.get_spatial_ref(), geom_type=gdal_utils.wkbLineString,
+                options=layer_options)
         if dst_layer is None:
             print('Error: Unable to create layer', file=sys.stderr)
             return 1

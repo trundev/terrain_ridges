@@ -89,6 +89,13 @@ class gdal_dataset:
     def get_spatial_ref(self):
         return self.dataset.GetSpatialRef()
 
+    def get_drv_name(self):
+        drv = self.dataset.GetDriver()
+        return drv.ShortName if hasattr(drv, 'ShortName') else None
+
+    def flush_cache(self):
+        return self.dataset.FlushCache()
+
     def get_layer_count(self):
         return self.dataset.GetLayerCount()
 
@@ -314,9 +321,9 @@ class gdal_vect_layer(gdal_dataset):
             self.layer = self.dataset.dataset.GetLayer(i)
 
     @staticmethod
-    def create(dataset, name, srs=None, geom_type=wkbUnknown):
+    def create(dataset, name, srs=None, geom_type=wkbUnknown, options=[]):
         """Create new layer"""
-        layer = dataset.dataset.CreateLayer(name, srs=srs, geom_type=geom_type)
+        layer = dataset.dataset.CreateLayer(name, srs=srs, geom_type=geom_type, options=options)
         if layer is None:
             return None
         ret = gdal_vect_layer(dataset.dataset)
@@ -348,6 +355,9 @@ class gdal_feature_geometry:
         self.feat = feat
         self.geom = geom
 
+    def get_id(self):
+        return self.feat.GetFID()
+
     def set_field(self, name, value):
         return self.feat.SetField(name, value)
 
@@ -369,14 +379,20 @@ class gdal_feature_geometry:
         self.feat.SetGeometry(self.geom)
         self.layer.CreateFeature(self.feat)
 
-def vect_create(filename, xsize=0, ysize=0, bands=0):
+def vect_create(filename, drv_name=None, xsize=0, ysize=0, bands=0, options=[]):
     """Open or create a vector file for writing"""
+    # drv_name can be empty/None, list/tuple or string
+    allowed_drivers, drv_name = ([], None) if not drv_name else \
+            (drv_name, drv_name[0]) if isinstance(drv_name, (list, tuple)) else \
+            ([drv_name], drv_name)
     # Open existing file or create new one
-    dataset = gdal.OpenEx(filename, gdal.OF_VECTOR | gdal.GA_Update)
+    dataset = gdal.OpenEx(filename, gdal.OF_VECTOR | gdal.GA_Update,
+            allowed_drivers=allowed_drivers, open_options=options)
     if dataset is None:
-        frmt = GetOutputDriverFor(filename)
-        drv = gdal.GetDriverByName(frmt)
-        dataset = drv.Create(filename, xsize, ysize, bands)
+        if drv_name is None:
+            drv_name = GetOutputDriverFor(filename)
+        drv = gdal.GetDriverByName(drv_name)
+        dataset = drv.Create(filename, xsize, ysize, bands, options=options)
 
     if dataset is None:
         return None

@@ -1,8 +1,20 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <kml xmlns="http://www.opengis.net/kml/2.2">
   <Document id="root_doc">
-    <Document id="ridges">
+    <Folder id="ridges">
       <name>ridges</name>
+      <Region>
+        <LatLonAltBox>
+          <north>39.49875</north>
+          <south>39.0004166666667</south>
+          <east>21.99875</east>
+          <west>21.5004166666667</west>
+        </LatLonAltBox>
+        <Lod>
+          <minLodPixels>256</minLodPixels>
+          <maxLodPixels>-1</maxLodPixels>
+        </Lod>
+      </Region>
       <Placemark id="ridges.1">
         <name>160km</name>
         <Style>
@@ -10405,6 +10417,6 @@
           </coordinates>
         </LineString>
       </Placemark>
-    </Document>
+    </Folder>
   </Document>
 </kml>
