@@ -28,7 +28,7 @@ env:
   DST_EXT: "${{ github.event.inputs.DST_EXT }}"
   TOOL_OPTIONS: "${{ github.event.inputs.TOOL_OPTIONS }}"
   GDALWARP_OPTIONS: "${{ github.event.inputs.GDALWARP_OPTIONS }}"
-  DEF_SRC_URL: "https://dds.cr.usgs.gov/srtm/version2_1/SRTM3/Eurasia/N39E021.hgt.zip"
+  DEF_SRC_URL: "http://tile.mtbmap.cz/Data/shadingdata/SRTMv2/N39E021.hgt.zip"
   DEF_DST_EXT: ".kml"
   DEF_GDALWARP_OPTIONS: ""  # Complete HGT-file (1201x1201)
   # GDAL prebuilt package from https://gisinternals.com/release.php,
