@@ -235,6 +235,19 @@ class gdal_dem_band(gdal_dataset):
         alt = self.get_elevation(x_y)[...,numpy.newaxis]
         return numpy.concatenate((lon_lat, alt), axis=-1)
 
+    def contour_generate(self, contourIntervalLevels, contourBase,
+                dstLayer, idField, elevField, callback=None, callback_data=None):
+        """gdal.ContourGenerate() wrapper with simplified parameters"""
+        if isinstance(contourIntervalLevels, (list, tuple)):
+            fixedLevels = contourIntervalLevels
+            contourInterval, contourBase = 0,0
+        else:
+            contourInterval, fixedLevels = contourIntervalLevels, []
+        useNoData = self.nodata_val is not None
+        noDataValue = self.nodata_val.item() if useNoData else 0
+        return gdal.ContourGenerate(self.band, contourInterval, contourBase, fixedLevels,
+                useNoData, noDataValue, dstLayer, idField, elevField, callback, callback_data)
+
 #
 # Coordinate transformation
 #
