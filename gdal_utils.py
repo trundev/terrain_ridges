@@ -46,6 +46,25 @@ ODsCEmulatedTransactions = ogr.ODsCEmulatedTransactions
 ODsCRandomLayerRead = ogr.ODsCRandomLayerRead
 ODsCRandomLayerWrite = ogr.ODsCRandomLayerWrite
 
+def get_gen_options(options):
+    """Convert generic dict() options to the common GDAL list() style"""
+    # Check if options are already a list()
+    if isinstance(options, list):
+        return options
+    # Create list of '<key>=<val>' strings
+    res = []
+    for key in options:
+        val = options[key]
+        if isinstance(val, bool):
+            val = 'YES' if val else 'NO'
+        elif isinstance(val, (list, tuple)):
+            val = ','.join(str(v) for v in val)
+        res.append('%s=%s'%(key, val))
+    return res
+
+#
+# GDAL dataset helper
+#
 class gdal_dataset:
     """"GDAL dataset representation"""
     def __init__(self, dataset):
@@ -235,18 +254,17 @@ class gdal_dem_band(gdal_dataset):
         alt = self.get_elevation(x_y)[...,numpy.newaxis]
         return numpy.concatenate((lon_lat, alt), axis=-1)
 
-    def contour_generate(self, contourIntervalLevels, contourBase,
-                dstLayer, idField, elevField, callback=None, callback_data=None):
-        """gdal.ContourGenerate() wrapper with simplified parameters"""
-        if isinstance(contourIntervalLevels, (list, tuple)):
-            fixedLevels = contourIntervalLevels
-            contourInterval, contourBase = 0,0
-        else:
-            contourInterval, fixedLevels = contourIntervalLevels, []
-        useNoData = self.nodata_val is not None
-        noDataValue = self.nodata_val.item() if useNoData else 0
-        return gdal.ContourGenerate(self.band, contourInterval, contourBase, fixedLevels,
-                useNoData, noDataValue, dstLayer, idField, elevField, callback, callback_data)
+    def contour_generate(self, dstLayer, options, callback=None, callback_data=None):
+        """gdal.ContourGenerateEx() wrapper"""
+        if self.nodata_val is not None and 'NODATA' not in options:
+            options['NODATA'] = self.nodata_val
+        return gdal.ContourGenerateEx(self.band, dstLayer.layer, options, callback, callback_data)
+
+    def polygonize(self, maskBand, dstLayer, pixValField, options=[], callback=None, callback_data=None):
+        """gdal.Polygonize() wrapper"""
+        if maskBand is not None:
+            maskBand = maskBand.band
+        return gdal.Polygonize(self.band, maskBand, dstLayer.layer, pixValField, options, callback, callback_data)
 
 #
 # Coordinate transformation
@@ -416,6 +434,12 @@ class gdal_vect_layer(gdal_dataset):
             return None
         return gdal_feature_geometry(self.layer, feat, geom)
 
+    def get_feature_geometry(self, id):
+        feat = self.layer.GetFeature(id)
+        if feat is None:
+            return feat
+        return gdal_feature_geometry(self.layer, feat, feat.GetGeometryRef())
+
 class gdal_feature_geometry:
     """"Common ogr.Feature ogr.Geometry representation"""
     def __init__(self, layer, feat, geom):
@@ -446,6 +470,13 @@ class gdal_feature_geometry:
         self.geom.CloseRings()
         self.feat.SetGeometry(self.geom)
         self.layer.CreateFeature(self.feat)
+
+    def simplify(self, tolerance):
+        geom = self.geom.Simplify(tolerance)
+        if geom is None:
+            return geom
+        #TODO: This does not change anything(?)
+        self.feat.SetGeometry(geom)
 
 def vect_create(filename, drv_name=None, xsize=0, ysize=0, bands=0, options=[]):
     """Open or create a vector file for writing"""

@@ -38,9 +38,9 @@ def FEATURE_OSM_NATURAL(valleys): return 'valley' if valleys else 'ridge'
 KEEP_SNAPSHOT = True
 RESUME_FROM_SNAPSHOT = 0    # Currently 0 to 3
 # GDAL layer creation options
-DEF_LAYER_OPTIONS = []
+DEF_LAYER_OPTIONS = {}
 BYDVR_LAYER_OPTIONS = {
-    'LIBKML': ['ADD_REGION=YES', 'FOLDER=YES'],
+    'LIBKML': {'ADD_REGION': True, 'FOLDER':True},
 }
 
 # Keep each branch-line one pixes away from its parent
@@ -506,23 +506,23 @@ class dst_layer_mgr:
         if self.multi_layer:
             level = round(get_zoom_level(self.spatial_ref, branch['area']))
             layer_id = self.id_fmt + '_level%d'%level
-            layer_options = ['NAME=' + self.id_fmt + ' - level %d'%level]
+            layer_options = {'NAME': self.id_fmt + ' - level %d'%level}
         else:
             layer_id = self.id_fmt
-            layer_options = []
+            layer_options = {}
         if layer_id in self.layer_set:
             return self.layer_set[layer_id]
 
         # Add some more layer options
-        layer_options += DEF_LAYER_OPTIONS
+        layer_options.update(DEF_LAYER_OPTIONS)
         bydrv_options = BYDVR_LAYER_OPTIONS.get(self.dst_ds.get_drv_name())
         if bydrv_options:
-            layer_options += bydrv_options
+            layer_options.update(bydrv_options)
         # Create the layer
         dst_layer = gdal_utils.gdal_vect_layer.create(self.dst_ds,
                 layer_id,
                 srs=self.spatial_ref, geom_type=gdal_utils.wkbLineString,
-                options=layer_options)
+                options=gdal_utils.get_gen_options(layer_options))
         if dst_layer is None:
             print('Error: Unable to create layer', file=sys.stderr)
             return None

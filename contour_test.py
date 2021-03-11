@@ -64,7 +64,6 @@ def main(argv):
     else:
         elev_fld = dst_layer.create_field('elev', gdal_utils.OFTReal)
     dst_layer.flush_cache()
-    ogr_lyr = dst_layer.layer
 
 
     def cb_fn(v0,v1,v2):
@@ -72,8 +71,26 @@ def main(argv):
 
     ele = .2    # Give some thickness of single pixel lines
     print('Generating contours at', ele)
-    dem_band.contour_generate([ele], None, ogr_lyr, id_fld, elev_fld, cb_fn, 'callback_data')
+    opts = gdal_utils.get_gen_options(dict(
+            #POLYGONIZE=True,
+            FIXED_LEVELS=[ele],
+            ID_FIELD=id_fld,
+            ELEV_FIELD=elev_fld))
+    dem_band.contour_generate(dst_layer, opts, cb_fn, 'callback_data')
+
+    id = 1
+    while True:
+        feat = dst_layer.get_feature_geometry(id)
+        if feat is None:
+            break
+        print('Simplifiying feature', feat.get_id())
+        feat.simplify(0)
+        #feat.set_geom_type(gdal_utils.wkbPolygon)
+        id += 1
+
     dst_layer.flush_cache()
+
+    #dem_band.polygonize(dem_band, dst_layer, -1, [], cb_fn, 'callback_data')
 
 if __name__ == '__main__':
     ret = main(sys.argv[1:])
