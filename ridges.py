@@ -38,9 +38,9 @@ def FEATURE_OSM_NATURAL(valleys): return 'valley' if valleys else 'ridge'
 KEEP_SNAPSHOT = True
 RESUME_FROM_SNAPSHOT = 0    # Currently 0 to 2
 # GDAL layer creation options
-DEF_LAYER_OPTIONS = []
+DEF_LAYER_OPTIONS = {}
 BYDVR_LAYER_OPTIONS = {
-    'LIBKML': ['ADD_REGION=YES', 'FOLDER=YES'],
+    'LIBKML': {'ADD_REGION': True, 'FOLDER':True},
 }
 
 #
@@ -635,11 +635,11 @@ def main(argv):
         layer_options = DEF_LAYER_OPTIONS
         bydrv_options = BYDVR_LAYER_OPTIONS.get(dst_ds.get_drv_name())
         if bydrv_options:
-            layer_options += bydrv_options
+            layer_options.update(bydrv_options)
         dst_layer = gdal_utils.gdal_vect_layer.create(dst_ds,
                 VECTOR_LAYER_NAME(valleys),
                 srs=dem_band.get_spatial_ref(), geom_type=gdal_utils.wkbLineString,
-                options=layer_options)
+                options=gdal_utils.get_gen_options(layer_options))
         if dst_layer is None:
             print('Error: Unable to create layer', file=sys.stderr)
             return 1
