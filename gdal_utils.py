@@ -36,6 +36,16 @@ def read_arr(arr, x_y):
 #
 # GDAL helpers
 #
+# Selected dataset (driver) capabilities
+ODsCCreateLayer = ogr.ODsCCreateLayer
+ODsCDeleteLayer = ogr.ODsCDeleteLayer
+ODsCCreateGeomFieldAfterCreateLayer = ogr.ODsCCreateGeomFieldAfterCreateLayer
+ODsCCurveGeometries = ogr.ODsCCurveGeometries
+ODsCTransactions = ogr.ODsCTransactions
+ODsCEmulatedTransactions = ogr.ODsCEmulatedTransactions
+ODsCRandomLayerRead = ogr.ODsCRandomLayerRead
+ODsCRandomLayerWrite = ogr.ODsCRandomLayerWrite
+
 class gdal_dataset:
     """"GDAL dataset representation"""
     def __init__(self, dataset):
@@ -93,6 +103,9 @@ class gdal_dataset:
         drv = self.dataset.GetDriver()
         return drv.ShortName if hasattr(drv, 'ShortName') else None
 
+    def test_capability(self, cap):
+        return self.dataset.TestCapability(cap)
+
     def flush_cache(self):
         return self.dataset.FlushCache()
 
@@ -115,6 +128,7 @@ def _get_dtype(band):
 class gdal_dem_band(gdal_dataset):
     """"GDAL DEM band representation"""
     dem_buf = None
+    shape = None
 
     def __init__(self, dataset, i=None):
         super(gdal_dem_band, self).__init__(dataset)
@@ -154,6 +168,8 @@ class gdal_dem_band(gdal_dataset):
                 self.dem_buf = alt_f
             else:
                 self.dem_buf[self.dem_buf == self.nodata_val] = numpy.nan
+
+        self.shape = self.dem_buf.shape
         return True
 
     def in_bounds(self, x_y):
@@ -229,10 +245,13 @@ class geod_distance:
             wkt = srs.ExportToWkt()
             self.geod = pyproj.crs.CRS.from_wkt(wkt).get_geod()
 
-    def get_distance(self, xy0, xy1):
+    def get_distance(self, xy0, xy1, flat=False):
         """Calculate distance between two points"""
         lonlatalt = self.dem_band.xy2lonlatalt(numpy.stack((xy0, xy1), axis=-2))
-        disp = lonlatalt[...,1,2] - lonlatalt[...,0,2]
+        if flat:
+            disp = 0
+        else:
+            disp = lonlatalt[...,1,2] - lonlatalt[...,0,2]
         # Precise method by calling pyproj.Geod.inv() between points
         lonlat = lonlatalt[...,:2].reshape([*lonlatalt.shape[:-2], -1])
         lonlat = lonlat.T
@@ -281,7 +300,7 @@ class draft_distance(tm_distance):
         self.pixel_size = self.get_pixel_size(x_y)
         print('Precalculated pixel size at', x_y, ':', self.pixel_size)
 
-    def get_distance(self, xy0, xy1):
+    def get_distance(self, xy0, xy1, flat=False):
         """Calculate distance between two points by using pre-calculated 'pixel_size'"""
         # Get elevation displacements
         alts = self.dem_band.get_elevation(numpy.stack((xy0, xy1), axis=-2))
@@ -313,6 +332,11 @@ wkbPoint25D = ogr.wkbPoint25D
 wkbLineString25D = ogr.wkbLineString25D
 wkbPolygon25D = ogr.wkbPolygon25D
 
+# Selected OGR field types, see OGRFieldType
+OFTInteger = ogr.OFTInteger
+OFTReal = ogr.OFTReal
+OFTString = ogr.OFTString
+
 class gdal_vect_layer(gdal_dataset):
     """"GDAL vector layer representation"""
     def __init__(self, dataset, i=None):
@@ -331,11 +355,12 @@ class gdal_vect_layer(gdal_dataset):
         return ret
 
     def get_name(self):
-        return self.layer.GetName()
+        return self.layer.GetName() if self.layer is not None else None
 
-    def create_field(self, name, is_str=False):
-        fd = ogr.FieldDefn(name, ogr.OFTString if is_str else ogr.OFTReal)
-        return self.layer.CreateField(fd)
+    def create_field(self, name, ftype=OFTReal):
+        fd = ogr.FieldDefn(name, ftype)
+        self.layer.CreateField(fd)
+        return self.layer.FindFieldIndex(name, True)
 
     def create_feature_geometry(self, geom_type=None):
         feat = ogr.Feature(feature_def=self.layer.GetLayerDefn())

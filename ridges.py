@@ -640,7 +640,7 @@ def main(argv):
             return 1
 
         # Add fields
-        dst_layer.create_field('Name', True)    # KML <name>
+        dst_layer.create_field('Name', gdal_utils.OFTString)    # KML <name>
 
         for entry in polylines:
             geom = dst_layer.create_feature_geometry(gdal_utils.wkbLineString)
