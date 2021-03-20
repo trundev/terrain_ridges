@@ -29,6 +29,11 @@ DISTANCE_METHOD = 0
 
 def VECTOR_LAYER_NAME(valleys): return 'valleys' if valleys else 'ridges'
 def VECTOR_FEATURE_STYLE(valleys): return 'PEN(c:#0000FF,w:2px)' if valleys else 'PEN(c:#FF0000,w:2px)'
+# Value for the OSM "natural" keys, to allow conversion to .osm
+# by ogr2osm.py or JOSM (opendata plugin)
+#   https://wiki.openstreetmap.org/wiki/Tag:natural%3Dridge
+#   https://wiki.openstreetmap.org/wiki/Tag:natural%3Dvalley
+def FEATURE_OSM_NATURAL(valleys): return 'valley' if valleys else 'ridge'
 
 KEEP_SNAPSHOT = True
 RESUME_FROM_SNAPSHOT = 0    # Currently 0 to 2
@@ -641,11 +646,15 @@ def main(argv):
 
         # Add fields
         dst_layer.create_field('Name', gdal_utils.OFTString)    # KML <name>
+        if FEATURE_OSM_NATURAL:
+            dst_layer.create_field('natural', gdal_utils.OFTString) # OSM "natural" key
 
         for entry in polylines:
             geom = dst_layer.create_feature_geometry(gdal_utils.wkbLineString)
             dist = entry['dist']
             geom.set_field('Name', '%dm'%dist if dist < 10000 else '%dkm'%round(dist/1000))
+            if FEATURE_OSM_NATURAL:
+                geom.set_field('natural', FEATURE_OSM_NATURAL(valleys))
             geom.set_style_string(VECTOR_FEATURE_STYLE(valleys))
             # Reverse the line to match the tracing direction
             for x_y in entry['line'][::-1]:

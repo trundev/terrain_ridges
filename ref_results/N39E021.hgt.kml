@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <kml xmlns="http://www.opengis.net/kml/2.2">
   <Document id="root_doc">
+    <Schema id="ridges.schema">
+      <SimpleField name="natural" type="string"/>
+    </Schema>
     <Folder id="ridges">
       <name>ridges</name>
       <Region>
@@ -23,6 +26,11 @@
             <width>2</width>
           </LineStyle>
         </Style>
+        <ExtendedData>
+          <SchemaData schemaUrl="#ridges.schema">
+            <SimpleData name="natural">ridge</SimpleData>
+          </SchemaData>
+        </ExtendedData>
         <LineString>
           <coordinates>
             21.9933333333333,39.4433333333333,89
@@ -4021,6 +4029,11 @@
             <width>2</width>
           </LineStyle>
         </Style>
+        <ExtendedData>
+          <SchemaData schemaUrl="#ridges.schema">
+            <SimpleData name="natural">ridge</SimpleData>
+          </SchemaData>
+        </ExtendedData>
         <LineString>
           <coordinates>
             21.2541666666667,39.7075,1945
@@ -5778,6 +5791,11 @@
             <width>2</width>
           </LineStyle>
         </Style>
+        <ExtendedData>
+          <SchemaData schemaUrl="#ridges.schema">
+            <SimpleData name="natural">ridge</SimpleData>
+          </SchemaData>
+        </ExtendedData>
         <LineString>
           <coordinates>
             21.6308333333333,39.3183333333333,1947
@@ -6481,6 +6499,11 @@
             <width>2</width>
           </LineStyle>
         </Style>
+        <ExtendedData>
+          <SchemaData schemaUrl="#ridges.schema">
+            <SimpleData name="natural">ridge</SimpleData>
+          </SchemaData>
+        </ExtendedData>
         <LineString>
           <coordinates>
             21.5341666666667,39.3933333333333,1773
@@ -7156,6 +7179,11 @@
             <width>2</width>
           </LineStyle>
         </Style>
+        <ExtendedData>
+          <SchemaData schemaUrl="#ridges.schema">
+            <SimpleData name="natural">ridge</SimpleData>
+          </SchemaData>
+        </ExtendedData>
         <LineString>
           <coordinates>
             21.8266666666667,39.77,1178
@@ -7713,6 +7741,11 @@
             <width>2</width>
           </LineStyle>
         </Style>
+        <ExtendedData>
+          <SchemaData schemaUrl="#ridges.schema">
+            <SimpleData name="natural">ridge</SimpleData>
+          </SchemaData>
+        </ExtendedData>
         <LineString>
           <coordinates>
             21.7283333333333,39.365,1001
@@ -8192,6 +8225,11 @@
             <width>2</width>
           </LineStyle>
         </Style>
+        <ExtendedData>
+          <SchemaData schemaUrl="#ridges.schema">
+            <SimpleData name="natural">ridge</SimpleData>
+          </SchemaData>
+        </ExtendedData>
         <LineString>
           <coordinates>
             21.6275,39.2575,1735
@@ -8641,6 +8679,11 @@
             <width>2</width>
           </LineStyle>
         </Style>
+        <ExtendedData>
+          <SchemaData schemaUrl="#ridges.schema">
+            <SimpleData name="natural">ridge</SimpleData>
+          </SchemaData>
+        </ExtendedData>
         <LineString>
           <coordinates>
             21.4033333333333,39.8558333333333,1185
@@ -9097,6 +9140,11 @@
             <width>2</width>
           </LineStyle>
         </Style>
+        <ExtendedData>
+          <SchemaData schemaUrl="#ridges.schema">
+            <SimpleData name="natural">ridge</SimpleData>
+          </SchemaData>
+        </ExtendedData>
         <LineString>
           <coordinates>
             21.9183333333333,39.7783333333333,1398
@@ -9530,6 +9578,11 @@
             <width>2</width>
           </LineStyle>
         </Style>
+        <ExtendedData>
+          <SchemaData schemaUrl="#ridges.schema">
+            <SimpleData name="natural">ridge</SimpleData>
+          </SchemaData>
+        </ExtendedData>
         <LineString>
           <coordinates>
             21.805,39.2875,961
@@ -9954,6 +10007,11 @@
             <width>2</width>
           </LineStyle>
         </Style>
+        <ExtendedData>
+          <SchemaData schemaUrl="#ridges.schema">
+            <SimpleData name="natural">ridge</SimpleData>
+          </SchemaData>
+        </ExtendedData>
         <LineString>
           <coordinates>
             21.2233333333333,39.8191666666667,1781
@@ -10379,6 +10437,11 @@
             <width>2</width>
           </LineStyle>
         </Style>
+        <ExtendedData>
+          <SchemaData schemaUrl="#ridges.schema">
+            <SimpleData name="natural">ridge</SimpleData>
+          </SchemaData>
+        </ExtendedData>
         <LineString>
           <coordinates>
             21.8008333333333,39.85,1176
@@ -10806,6 +10869,11 @@
             <width>2</width>
           </LineStyle>
         </Style>
+        <ExtendedData>
+          <SchemaData schemaUrl="#ridges.schema">
+            <SimpleData name="natural">ridge</SimpleData>
+          </SchemaData>
+        </ExtendedData>
         <LineString>
           <coordinates>
             21.2241666666667,39.7833333333333,1802
@@ -11219,6 +11287,11 @@
             <width>2</width>
           </LineStyle>
         </Style>
+        <ExtendedData>
+          <SchemaData schemaUrl="#ridges.schema">
+            <SimpleData name="natural">ridge</SimpleData>
+          </SchemaData>
+        </ExtendedData>
         <LineString>
           <coordinates>
             21.9233333333333,39.1416666666667,1272
@@ -11609,6 +11682,11 @@
             <width>2</width>
           </LineStyle>
         </Style>
+        <ExtendedData>
+          <SchemaData schemaUrl="#ridges.schema">
+            <SimpleData name="natural">ridge</SimpleData>
+          </SchemaData>
+        </ExtendedData>
         <LineString>
           <coordinates>
             21.2458333333333,39.1275,792
@@ -11992,6 +12070,11 @@
             <width>2</width>
           </LineStyle>
         </Style>
+        <ExtendedData>
+          <SchemaData schemaUrl="#ridges.schema">
+            <SimpleData name="natural">ridge</SimpleData>
+          </SchemaData>
+        </ExtendedData>
         <LineString>
           <coordinates>
             21.8383333333333,39.1975,1249
@@ -12375,6 +12458,11 @@
             <width>2</width>
           </LineStyle>
         </Style>
+        <ExtendedData>
+          <SchemaData schemaUrl="#ridges.schema">
+            <SimpleData name="natural">ridge</SimpleData>
+          </SchemaData>
+        </ExtendedData>
         <LineString>
           <coordinates>
             21.5358333333333,39.5475,1875
@@ -12726,6 +12814,11 @@
             <width>2</width>
           </LineStyle>
         </Style>
+        <ExtendedData>
+          <SchemaData schemaUrl="#ridges.schema">
+            <SimpleData name="natural">ridge</SimpleData>
+          </SchemaData>
+        </ExtendedData>
         <LineString>
           <coordinates>
             21.8116666666667,39.6766666666667,713
@@ -13071,6 +13164,11 @@
             <width>2</width>
           </LineStyle>
         </Style>
+        <ExtendedData>
+          <SchemaData schemaUrl="#ridges.schema">
+            <SimpleData name="natural">ridge</SimpleData>
+          </SchemaData>
+        </ExtendedData>
         <LineString>
           <coordinates>
             21.65,39.7308333333333,669
@@ -13392,6 +13490,11 @@
             <width>2</width>
           </LineStyle>
         </Style>
+        <ExtendedData>
+          <SchemaData schemaUrl="#ridges.schema">
+            <SimpleData name="natural">ridge</SimpleData>
+          </SchemaData>
+        </ExtendedData>
         <LineString>
           <coordinates>
             21.4575,39.405,1665
@@ -13728,6 +13831,11 @@
             <width>2</width>
           </LineStyle>
         </Style>
+        <ExtendedData>
+          <SchemaData schemaUrl="#ridges.schema">
+            <SimpleData name="natural">ridge</SimpleData>
+          </SchemaData>
+        </ExtendedData>
         <LineString>
           <coordinates>
             21.2966666666667,39.1316666666667,1528
@@ -14027,6 +14135,11 @@
             <width>2</width>
           </LineStyle>
         </Style>
+        <ExtendedData>
+          <SchemaData schemaUrl="#ridges.schema">
+            <SimpleData name="natural">ridge</SimpleData>
+          </SchemaData>
+        </ExtendedData>
         <LineString>
           <coordinates>
             21.8,39.9083333333333,981
@@ -14342,6 +14455,11 @@
             <width>2</width>
           </LineStyle>
         </Style>
+        <ExtendedData>
+          <SchemaData schemaUrl="#ridges.schema">
+            <SimpleData name="natural">ridge</SimpleData>
+          </SchemaData>
+        </ExtendedData>
         <LineString>
           <coordinates>
             21.5383333333333,39.5358333333333,1850
@@ -14635,6 +14753,11 @@
             <width>2</width>
           </LineStyle>
         </Style>
+        <ExtendedData>
+          <SchemaData schemaUrl="#ridges.schema">
+            <SimpleData name="natural">ridge</SimpleData>
+          </SchemaData>
+        </ExtendedData>
         <LineString>
           <coordinates>
             21.54,39.2158333333333,2084
@@ -14921,6 +15044,11 @@
             <width>2</width>
           </LineStyle>
         </Style>
+        <ExtendedData>
+          <SchemaData schemaUrl="#ridges.schema">
+            <SimpleData name="natural">ridge</SimpleData>
+          </SchemaData>
+        </ExtendedData>
         <LineString>
           <coordinates>
             21.1225,39.6833333333333,2257
@@ -15205,6 +15333,11 @@
             <width>2</width>
           </LineStyle>
         </Style>
+        <ExtendedData>
+          <SchemaData schemaUrl="#ridges.schema">
+            <SimpleData name="natural">ridge</SimpleData>
+          </SchemaData>
+        </ExtendedData>
         <LineString>
           <coordinates>
             21.2025,39.0975,825
@@ -15493,6 +15626,11 @@
             <width>2</width>
           </LineStyle>
         </Style>
+        <ExtendedData>
+          <SchemaData schemaUrl="#ridges.schema">
+            <SimpleData name="natural">ridge</SimpleData>
+          </SchemaData>
+        </ExtendedData>
         <LineString>
           <coordinates>
             21.2408333333333,39.3566666666667,981
@@ -15781,6 +15919,11 @@
             <width>2</width>
           </LineStyle>
         </Style>
+        <ExtendedData>
+          <SchemaData schemaUrl="#ridges.schema">
+            <SimpleData name="natural">ridge</SimpleData>
+          </SchemaData>
+        </ExtendedData>
         <LineString>
           <coordinates>
             21.1533333333333,39.4533333333333,2278
@@ -16043,6 +16186,11 @@
             <width>2</width>
           </LineStyle>
         </Style>
+        <ExtendedData>
+          <SchemaData schemaUrl="#ridges.schema">
+            <SimpleData name="natural">ridge</SimpleData>
+          </SchemaData>
+        </ExtendedData>
         <LineString>
           <coordinates>
             21.1658333333333,39.8575,2026
@@ -16308,6 +16456,11 @@
             <width>2</width>
           </LineStyle>
         </Style>
+        <ExtendedData>
+          <SchemaData schemaUrl="#ridges.schema">
+            <SimpleData name="natural">ridge</SimpleData>
+          </SchemaData>
+        </ExtendedData>
         <LineString>
           <coordinates>
             21.1566666666667,39.3975,2033
@@ -16559,6 +16712,11 @@
             <width>2</width>
           </LineStyle>
         </Style>
+        <ExtendedData>
+          <SchemaData schemaUrl="#ridges.schema">
+            <SimpleData name="natural">ridge</SimpleData>
+          </SchemaData>
+        </ExtendedData>
         <LineString>
           <coordinates>
             21.3008333333333,39.7141666666667,1830
@@ -16826,6 +16984,11 @@
             <width>2</width>
           </LineStyle>
         </Style>
+        <ExtendedData>
+          <SchemaData schemaUrl="#ridges.schema">
+            <SimpleData name="natural">ridge</SimpleData>
+          </SchemaData>
+        </ExtendedData>
         <LineString>
           <coordinates>
             21.7425,39.3541666666667,862
@@ -17080,6 +17243,11 @@
             <width>2</width>
           </LineStyle>
         </Style>
+        <ExtendedData>
+          <SchemaData schemaUrl="#ridges.schema">
+            <SimpleData name="natural">ridge</SimpleData>
+          </SchemaData>
+        </ExtendedData>
         <LineString>
           <coordinates>
             21.6683333333333,39.7675,912
@@ -17333,6 +17501,11 @@
             <width>2</width>
           </LineStyle>
         </Style>
+        <ExtendedData>
+          <SchemaData schemaUrl="#ridges.schema">
+            <SimpleData name="natural">ridge</SimpleData>
+          </SchemaData>
+        </ExtendedData>
         <LineString>
           <coordinates>
             21.7775,39.7058333333333,595
@@ -17578,6 +17751,11 @@
             <width>2</width>
           </LineStyle>
         </Style>
+        <ExtendedData>
+          <SchemaData schemaUrl="#ridges.schema">
+            <SimpleData name="natural">ridge</SimpleData>
+          </SchemaData>
+        </ExtendedData>
         <LineString>
           <coordinates>
             21.7941666666667,39.2991666666667,949
@@ -17811,6 +17989,11 @@
             <width>2</width>
           </LineStyle>
         </Style>
+        <ExtendedData>
+          <SchemaData schemaUrl="#ridges.schema">
+            <SimpleData name="natural">ridge</SimpleData>
+          </SchemaData>
+        </ExtendedData>
         <LineString>
           <coordinates>
             21.3191666666667,39.855,1134
@@ -18044,6 +18227,11 @@
             <width>2</width>
           </LineStyle>
         </Style>
+        <ExtendedData>
+          <SchemaData schemaUrl="#ridges.schema">
+            <SimpleData name="natural">ridge</SimpleData>
+          </SchemaData>
+        </ExtendedData>
         <LineString>
           <coordinates>
             21.545,39.1408333333333,2060
@@ -18262,6 +18450,11 @@
             <width>2</width>
           </LineStyle>
         </Style>
+        <ExtendedData>
+          <SchemaData schemaUrl="#ridges.schema">
+            <SimpleData name="natural">ridge</SimpleData>
+          </SchemaData>
+        </ExtendedData>
         <LineString>
           <coordinates>
             21.6491666666667,39.6816666666667,185
@@ -18476,6 +18669,11 @@
             <width>2</width>
           </LineStyle>
         </Style>
+        <ExtendedData>
+          <SchemaData schemaUrl="#ridges.schema">
+            <SimpleData name="natural">ridge</SimpleData>
+          </SchemaData>
+        </ExtendedData>
         <LineString>
           <coordinates>
             21.385,39.8308333333333,1297
@@ -18700,6 +18898,11 @@
             <width>2</width>
           </LineStyle>
         </Style>
+        <ExtendedData>
+          <SchemaData schemaUrl="#ridges.schema">
+            <SimpleData name="natural">ridge</SimpleData>
+          </SchemaData>
+        </ExtendedData>
         <LineString>
           <coordinates>
             21.4641666666667,39.4716666666667,1604
