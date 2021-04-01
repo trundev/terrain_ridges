@@ -1,6 +1,6 @@
 # Notes:
-# * GDAL==3.2.1 is currently supported by "release-1928-x64-gdal-3-2-1-mapserver-7-6-2",
+# * GDAL==3.2.2 is currently supported by "release-1928-x64-gdal-3-2-1-mapserver-7-6-2",
 #   check https://gisinternals.com/release.php
-GDAL==3.2.1
+GDAL==3.2.2
 numpy
 pyproj
