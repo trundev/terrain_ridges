@@ -36,7 +36,7 @@ def VECTOR_FEATURE_STYLE(valleys): return 'PEN(c:#0000FF,w:2px)' if valleys else
 def FEATURE_OSM_NATURAL(valleys): return 'valley' if valleys else 'ridge'
 
 KEEP_SNAPSHOT = True
-RESUME_FROM_SNAPSHOT = 0    # Currently 0 to 2
+RESUME_FROM_SNAPSHOT = 0    # Currently 0 to 3
 # GDAL layer creation options
 DEF_LAYER_OPTIONS = []
 BYDVR_LAYER_OPTIONS = {
@@ -46,17 +46,14 @@ BYDVR_LAYER_OPTIONS = {
 #
 # Internal data-types, mostly for keep/resume support
 #
-DIR_DIST_DTYPE = [
-        ('n_dir', NEIGHBOR_DIR_DTYPE),
-        ('dist', float),
-]
 TENTATIVE_DTYPE = [
         ('x_y', (numpy.int32, (2,))),
         ('alt', float),
 ]
-RESULT_LINE_DTYPE = [
+BRANCH_LINE_DTYPE = [
+        ('start_xy', (numpy.int32, (2,))),
         ('x_y', (numpy.int32, (2,))),
-        ('dist', float),
+        ('area', float),
 ]
 
 #
@@ -231,7 +228,7 @@ def trace_ridges(dem_band, valleys=False, boundary_val=None):
     return dir_arr
 
 #
-# Second stage - flip longest line(s)
+# Branch identification for the second and third stages
 #
 def get_mgrid(shape):
     """Create a grid of self-pointing coordinates"""
@@ -239,62 +236,106 @@ def get_mgrid(shape):
     # The coordinates must be in the last dimension
     return numpy.moveaxis(mgrid, 0, -1)
 
-def calculate_dist_arr(distance, dir_arr):
-    """Generate 'dist_arr' from the 'dir_arr'"""
+def calc_pixel_area(distance, shape):
     # Use a helper array, where each element points to it-self
-    mgrid_xy = get_mgrid(dir_arr.shape)
-    mgrid_n_xy = neighbor_xy_safe(mgrid_xy, dir_arr)
-    dist_arr = distance.get_distance(mgrid_xy, mgrid_n_xy)
-    del mgrid_xy
-    # Keep NaN-s where there is no neighbors (there are 0-s, because of neighbor_xy_safe)
-    mask = neighbor_is_invalid(dir_arr)
-    mask &= (dir_arr != NEIGHBOR_SEED) & (dir_arr != NEIGHBOR_STOP)
-    dist_arr[mask] = numpy.nan
+    mgrid_xy = get_mgrid(shape)
 
-    #
-    # Restore distances by repeating the tracing steps (in parallel)
-    # Start from all 'seed'-s and 'stop'-s
-    #
-    mask = (dir_arr == NEIGHBOR_SEED) | (dir_arr == NEIGHBOR_STOP)
-    print('Calculating distances to %d seeds'%(numpy.count_nonzero(mask)))
-    assert (dist_arr[mask] == 0.).all(), 'Start with non-zero distance'
-    # Select the neighbors pointing to the masked pixels by using 'mgrid_n_xy'
-    # The initial mask must be removed as it will pass thru - its 'mgrid_n_xy' points to them-self
-    mask = gdal_utils.read_arr(mask, mgrid_n_xy) ^ mask
+    # Helper arrays, where each element points to its X or Y neighbor
+    mgrid_xy_x = numpy.concatenate((mgrid_xy[1:2,...], mgrid_xy[:-1,...]), axis=0)
+    mgrid_xy_y = numpy.concatenate((mgrid_xy[:,1:2,...], mgrid_xy[:,:-1,...]), axis=1)
+    # Multiply distances in X adm Y directions
+    area_arr = distance.get_distance(mgrid_xy, mgrid_xy_x) \
+             * distance.get_distance(mgrid_xy, mgrid_xy_y)
+
+    # Use "flat" distances for the nodata-elevation pixels
+    mask = numpy.isnan(area_arr)
+    if mask.any():
+        area_arr[mask] = distance.get_distance(mgrid_xy[mask], mgrid_xy_x[mask], True) \
+                       * distance.get_distance(mgrid_xy[mask], mgrid_xy_y[mask], True)
+    return area_arr
+
+def arrange_lines(dir_arr, area_arr, trunks_only):
+    """Arrange lines in branches by using the area of coverage"""
+    area_arr = area_arr.copy()
+    # Count the number of neighbors pointing to each pixel
+    # Only the last branch that reaches a pixel continues forward, others stop there.
+    # As the branches are processed starting from the one with less coverage-area, this
+    # allows the largest one to reach the graph-seed.
+    mgrid_n_xy = neighbor_xy_safe(get_mgrid(dir_arr.shape), dir_arr)
+    n_num = numpy.zeros(dir_arr.shape, dtype=int)
+    for d in VALID_NEIGHBOR_DIRS:
+        n_xy = mgrid_n_xy[dir_arr == d]
+        n = numpy.zeros_like(n_num)
+        gdal_utils.write_arr(n, n_xy, 1)
+        n_num += n
+    del n_xy, n
+    # Put -1 at invalid nodes, except the "real" seeds (distinguish from the "leafs")
+    n_num[neighbor_is_invalid(dir_arr) & (n_num == 0)] = -1
+    all_leafs = n_num == 0
+    print('Detected %d "leaf" and %d "real-seed" pixels'%(
+            numpy.count_nonzero(all_leafs),
+            numpy.count_nonzero(neighbor_is_invalid(dir_arr) & (n_num > 0))))
+    del mgrid_n_xy
+
+    # Start at the "leaf" pixels
+    pend_lines = numpy.zeros(numpy.count_nonzero(all_leafs), dtype=BRANCH_LINE_DTYPE)
+    pend_lines['start_xy'] = pend_lines['x_y'] = numpy.array(numpy.nonzero(all_leafs)).T
+    pend_lines['area'] = gdal_utils.read_arr(area_arr, pend_lines['x_y'])
+    del all_leafs
+
+    branch_lines = numpy.empty_like(pend_lines, shape=[0])
     progress_idx = 0
-    while mask.any():
-        # Adjust selected pixels with distances from their neighbors
-        dist_arr[mask] += gdal_utils.read_arr(dist_arr, mgrid_n_xy[mask])
+    while pend_lines.size:
+        # Process the branch with minimal coverage-area
+        br_idx = pend_lines['area'].argmin()
+        branch = pend_lines[br_idx]
+        x_y = branch['x_y']
+        area = gdal_utils.read_arr(area_arr, x_y)
+        assert branch['area'] <= area, 'Branch area decreases at %s: %f -> %f m2'%(x_y, branch['area'], area)
+        n_dir = gdal_utils.read_arr(dir_arr, x_y)
+        if not neighbor_is_invalid(n_dir):
+            # Advance to the next point
+            x_y = neighbor_xy(x_y, n_dir)
+            # Accumulate the coverage-area
+            area += gdal_utils.read_arr(area_arr, x_y)
+            gdal_utils.write_arr(area_arr, x_y, area)
+
+            # Handle node-bridges counter: only the last branch to proceed further
+            n = gdal_utils.read_arr(n_num, x_y)
+            assert n > 0
+            gdal_utils.write_arr(n_num, x_y, n - 1)
+            # Stop at graph-node (non-last branches)
+            is_stop = n > 1
+            keep_branch = not trunks_only
+
+            # Update the end-point
+            branch['x_y'] = x_y
+            if not is_stop:
+                branch['area'] = area
+
+        else:
+            # Stop at graph-seed (trunk branch)
+            keep_branch = is_stop = True
+
+        if is_stop:
+            # With "trunks_only" discard all, but trunk branches
+            if keep_branch:
+                branch_lines = numpy.append(branch_lines, branch)
+            pend_lines = numpy.delete(pend_lines, br_idx)
+
         #
-        # Progress, each 100-th step
+        # Progress, each 10000-th step
         #
-        if progress_idx % 100 == 0:
-            masked_dist = dist_arr[mask]
-            print('  Process step %d, perimeter %d, dist max/min %.1f/%.1f'%(progress_idx,
-                    masked_dist.size, masked_dist.max(), masked_dist.min()))
-            del masked_dist
+        if progress_idx % 10000 == 0:
+            area = branch_lines['area'].max() if branch_lines.size else 0
+            area = max(area, pend_lines['area'].max())
+            print('  Process step %d, max. area %.2f km2, completed %d, pending %d'%(progress_idx,
+                    area / 1e6, branch_lines.size, pend_lines.size))
         progress_idx += 1
 
-        # Select the neighbors pointing to current mask
-        mask = gdal_utils.read_arr(mask, mgrid_n_xy)
-
-    return dist_arr
-
-def calculate_result_lines(dir_arr, dist_arr):
-    """Generate 'result_lines' from the 'dir_arr' and 'dist_arr'"""
-    mgrid_n_xy = neighbor_xy_safe(get_mgrid(dir_arr.shape), dir_arr)
-    # Isolate the 'leaf' pixels and create the 'result_lines' out of them
-    all_leafs = numpy.ones(dir_arr.shape, dtype=bool)
-    gdal_utils.write_arr(all_leafs, mgrid_n_xy, False)
-    x_y = numpy.array(numpy.nonzero(all_leafs)).T
-    result_lines = numpy.empty(x_y.shape[:-1], dtype=RESULT_LINE_DTYPE)
-    result_lines['x_y'] = x_y
-    result_lines['dist'] = gdal_utils.read_arr(dist_arr, x_y)
-
-    # Sort the 'result_lines' by 'dist' (ascending sort)
-    argsort = numpy.argsort(result_lines['dist'])
-    result_lines = numpy.take(result_lines, argsort)
-    return result_lines
+    # Confirm everything is processed
+    assert (n_num <= 0).all(), 'Unprocessed pixels at %s'%numpy.array(numpy.nonzero(n_num > 0)).T
+    return branch_lines
 
 def flip_line(dir_arr, x_y):
     """Flip all 'n_dir'-s along a line"""
@@ -310,134 +351,6 @@ def flip_line(dir_arr, x_y):
 
         x_y = n_xy
         prev_dir = n_dir
-
-def flip_seed_lines(dir_arr, dist_arr):
-    """Create a new 'dir_arr', where all the longest lines ending to any of "seed"-s are flipped"""
-    # Use a helper array, where each element points to its neighbor
-    mgrid_n_xy = neighbor_xy_safe(get_mgrid(dir_arr.shape), dir_arr)
-
-    # Isolate all the 'leaf' pixels
-    all_leafs = numpy.zeros(dir_arr.shape, dtype=bool)
-    gdal_utils.write_arr(all_leafs, mgrid_n_xy, True)
-    print('Flipping the longest lines starting at %d leafs'%(numpy.count_nonzero(~all_leafs)))
-
-    # Loop until the 'leaf' pixels are processed
-    while not all_leafs.all():
-        # Obtain the 'leaf' with longest 'dist' then flip it
-        flat_idx = numpy.ma.array(dist_arr, mask=all_leafs).argmax()
-        x_y = numpy.array(numpy.unravel_index(flat_idx, dir_arr.shape))
-        s_xy = flip_line(dir_arr, x_y)
-        print('  Flipped longest line from %s to %s, dist %d'%(x_y, s_xy, gdal_utils.read_arr(dist_arr, x_y)))
-
-        # Mask-out all pixels descending from this 'seed'
-        mask = numpy.zeros(shape=dir_arr.shape, dtype=bool)
-        gdal_utils.write_arr(mask, s_xy, True)
-        # Select the neighbors pointing to the masked pixels by using 'mgrid_n_xy'
-        # The initial mask must be removed as it will pass thru - its 'mgrid_n_xy' points to them-self
-        mask = gdal_utils.read_arr(mask, mgrid_n_xy) ^ mask
-        while mask.any():
-            all_leafs |= mask
-            mask = gdal_utils.read_arr(mask, mgrid_n_xy)
-
-    return dir_arr
-
-#
-# Third stage - combine lines
-#
-def reduced_distance(dir_arr, x_y):
-    """Calculate trace distance upto the next NEIGHBOR_STOP"""
-    start_dist = gdal_utils.read_arr(dir_arr['dist'], x_y)
-    result = numpy.full_like(start_dist, numpy.nan)
-    pend_mask = numpy.isnan(result)
-    res_mask = numpy.empty_like(pend_mask)
-    while True:
-        n_dir = gdal_utils.read_arr(dir_arr['n_dir'], x_y)
-        done_mask = neighbor_is_invalid(n_dir)
-        if done_mask.any():
-            # Some lines are traced to their ends, keep their distances in 'result'
-            dist = gdal_utils.read_arr(dir_arr['dist'], x_y[done_mask])
-            res_mask.fill(False)
-            res_mask[pend_mask] = done_mask
-            # The 'res_mask' now contains the 'done_mask', but spread to the initial locations
-            result[res_mask] = start_dist[res_mask] - dist
-
-            # Drop completed lines, proceed with the rest
-            done_mask = numpy.logical_not(done_mask)
-            pend_mask[pend_mask] = done_mask
-            x_y = x_y[done_mask]
-            n_dir = n_dir[done_mask]
-            if not pend_mask.any():
-                assert not numpy.isnan(result).any(), \
-                        'Failed to calculate distance at: %s'%(numpy.nonzero(numpy.isnan(result)))
-                return result
-        x_y = neighbor_xy(x_y, n_dir)
-
-def reduced_distance_opt(dir_arr, x_y):
-    """Calculate trace distances, optimized by splitting 'x_y' into chunks"""
-    CHUNK_SIZE = 10000
-    new_dist = numpy.empty(0, dtype=dir_arr['dist'].dtype)
-    for start in range(0, x_y.shape[0], CHUNK_SIZE):
-        n_dist = reduced_distance(dir_arr, x_y[start:start + CHUNK_SIZE])
-        new_dist = numpy.concatenate((new_dist, n_dist))
-    return new_dist
-
-def combine_lines(result_lines, dir_arr, min_len=0):
-    """Create polylines from previously generated ridges or valleys"""
-    # Remove the lines shorter than min_len
-    idx = numpy.searchsorted(result_lines['dist'], min_len)
-    result_lines = result_lines[idx:]
-
-    #
-    # Extract the longest lines one-by-one and cut all that overlaps it
-    #
-    polylines = []
-    prev_dist = numpy.inf    # Assert only
-    while result_lines.size:
-        x_y, dist = result_lines[-1]
-        result_lines = result_lines[:-1]
-        assert dist <= prev_dist, 'Unsorted result_lines %d->%d'%(prev_dist, dist); prev_dist = dist
-        assert dist >= min_len, 'Short line in result_lines %d/%d'%(dist, min_len)
-
-        print('Generating line starting at point %s total length %d'%(x_y, dist))
-        pline = numpy.empty((0, *x_y.shape), dtype=x_y.dtype)
-        # Trace route
-        start_xy = x_y
-        while True:
-            pline = numpy.append(pline, [x_y], axis=0)
-            n_dir = gdal_utils.read_arr(dir_arr['n_dir'], x_y)
-            if neighbor_is_invalid(n_dir):
-                break
-            # Stop other lines from overlapping that one
-            gdal_utils.write_arr(dir_arr['n_dir'], x_y, NEIGHBOR_STOP)
-            x_y = neighbor_xy(x_y, n_dir)
-        polylines.append({'dist': dist, 'x_y': start_xy, 'line': pline})
-        if not result_lines.size:
-            break
-
-        # Update distances after some of the lines were cut
-        print('  Update remaining %d lines: mid/min len %d/%d'%(
-                result_lines.shape[0], result_lines[result_lines.shape[0] // 2]['dist'], result_lines[0]['dist']))
-        # Run distance reducing in parallel
-        new_dist = reduced_distance_opt(dir_arr, result_lines['x_y'])
-        mask = new_dist != result_lines['dist']
-        if mask.any():
-            assert (new_dist[mask] < result_lines[mask]['dist']).all(), \
-                    'Line distance was increased: %s'%(
-                        numpy.transpose([result_lines['dist'], new_dist])[new_dist > result_lines['dist']])
-            # Keep aside the changed entries
-            new_rl = result_lines[mask]
-            new_rl['dist'] = new_dist[mask]
-            # Leave unchanged entries only
-            result_lines = result_lines[numpy.logical_not(mask)]
-            # Discard short lines
-            mask = new_rl['dist'] >= min_len
-            if mask.any():
-                new_rl = new_rl[mask]
-                # Insert the changed entries in parallel, by keeping 'result_lines' sorted
-                print('  Reordering %d lines: max/min len %d/%d'%(new_rl.shape[0], new_rl['dist'].max(), new_rl['dist'].min()))
-                result_lines = sorted_arr_insert(result_lines, new_rl, 'dist')
-
-    return polylines
 
 #
 # Keep/resume support
@@ -489,20 +402,6 @@ def restore_arrays(prefix, arr_slices):
 
         res_list.append(arr)
     return res_list
-
-def keep_result_lines_dir_arr(prefix, result_lines, dir_arr):
-    """Store snapshots of the 'result_lines' and 'dir_arr' arrays"""
-    keep_arrays(prefix, {
-            'result_lines': result_lines,
-            'dir_arr': dir_arr,
-    })
-
-def restore_result_lines_dir_arr(prefix):
-    """Load snapshots of the 'result_lines' and 'dir_arr' arrays"""
-    return restore_arrays(prefix, {
-            'result_lines': RESULT_LINE_DTYPE,
-            'dir_arr': DIR_DIST_DTYPE,
-        })
 
 #
 # Main processing
@@ -570,58 +469,83 @@ def main(argv):
         dir_arr, = restore_arrays(src_filename + '-1-', {'dir_arr': None,})
 
     #
-    # Flip the longest lines ending in each 'seed' and recalculate the 'dist' members
-    # The seeds become the former last point of these lines
+    # The coverage-area of each pixels is needed by arrange_lines()
+    # The distance object is used to calculate the branch length
+    #
+    distance = gdal_utils.geod_distance(dem_band) if 0 == DISTANCE_METHOD \
+            else gdal_utils.tm_distance(dem_band) if 1 == DISTANCE_METHOD \
+            else gdal_utils.draft_distance(dem_band)
+    area_arr = calc_pixel_area(distance, dem_band.shape)
+    print('Calculated total area %.2f km2, mean %.2f m2'%(area_arr.sum() / 1e6, area_arr.mean()))
+
+    #
+    # Identify and flip the "trunk" branches
+    # All the real-seeds become regular graph-nodes or "leaf" pixel.
+    # The former start/leaf pixel of these branches becomes a "seed".
     #
     if RESUME_FROM_SNAPSHOT < 2:
 
         start = time.time()
 
-        # flip_seed_lines() needs the 'dist_arr'
-        distance = gdal_utils.geod_distance(dem_band) if 0 == DISTANCE_METHOD \
-                else gdal_utils.tm_distance(dem_band) if 1 == DISTANCE_METHOD \
-                else gdal_utils.draft_distance(dem_band)
-        dist_arr = calculate_dist_arr(distance, dir_arr)
+        # Arrange branches to select which one to flip (trunks_only)
+        branch_lines = arrange_lines(dir_arr, area_arr, True)
 
         # Actual flip
-        dir_arr = flip_seed_lines(dir_arr, dist_arr)
-        if dir_arr is None:
-            print('Error: Failed to flip longest lines', file=sys.stderr)
-            return 2
-
-        # Calculate the updated 'dist_arr' and 'result_lines'
-        dist_arr = calculate_dist_arr(distance, dir_arr)
-        result_lines = calculate_result_lines(dir_arr, dist_arr)
-
-        # Combine dir_arr and dist_arr for convenience in further processing
-        dir_dist_arr = numpy.empty(dir_arr.shape, dtype=DIR_DIST_DTYPE)
-        dir_dist_arr['n_dir'] = dir_arr
-        dir_dist_arr['dist'] = dist_arr
-        dir_arr = dir_dist_arr
-        del dir_arr, dist_arr
+        for x_y in branch_lines['start_xy']:
+            if flip_line(dir_arr, x_y) is None:
+                print('Error: Failed to flip branch at %s'%(x_y), file=sys.stderr)
+                return 2
 
         duration = time.time() - start
-        print('Flip & merge longest lines, total %d lines, max/min length %d/%d, %d sec'%(
-                result_lines.shape[0], result_lines[-1]['dist'], result_lines[0]['dist'], duration))
+        print('Flip & merge total %d trunk-branches, max/min area %.1f/%.3f km2, %d sec'%(
+                branch_lines.size, branch_lines['area'].max() / 1e6, branch_lines['area'].min() / 1e6,
+                duration))
 
         if KEEP_SNAPSHOT:
-            keep_result_lines_dir_arr(src_filename + '-2-', result_lines, dir_dist_arr)
+            keep_arrays(src_filename + '-2-', {
+                    'dir_arr': dir_arr,
+                    'branch_lines': branch_lines,
+                })
     elif RESUME_FROM_SNAPSHOT == 2:
-        result_lines, dir_dist_arr = restore_result_lines_dir_arr(src_filename + '-2-')
+        dir_arr, branch_lines = restore_arrays(src_filename + '-2-', {
+                    'dir_arr': None,
+                    'branch_lines': BRANCH_LINE_DTYPE,
+                })
 
     #
-    # Combine traced lines, longer than one-tenth of the longest one
+    # Identify all the branches
     #
-    start = time.time()
+    if RESUME_FROM_SNAPSHOT < 3:
 
-    polylines = combine_lines(result_lines, dir_dist_arr, result_lines[-1]['dist'] / 20)
-    if not polylines:
-        print('Error: Failed to combine lines', file=sys.stderr)
-        return 2
+        start = time.time()
 
-    duration = time.time() - start
-    print('Created total %d polylines, first %d, last %d points, %d sec'%(len(polylines),
-            len(polylines[0]['line']), len(polylines[-1]['line']), duration))
+        # Arrange branches
+        branch_lines = arrange_lines(dir_arr, area_arr, False)
+
+        # Sort the the generated branches (descending 'area' order)
+        argsort = numpy.argsort(branch_lines['area'])
+        branch_lines = numpy.take(branch_lines, argsort[::-1])
+
+        # Trim to 5 zoom-levels (1/1024 of max area)
+        min_area = area_arr.sum() / (4 ** 5)
+        print('  Trimming total %d branches to min area of %.3f km2 (currently %.3f km2)'%(
+                branch_lines.size, min_area / 1e6, branch_lines['area'].min() / 1e6))
+        branch_lines = branch_lines[branch_lines['area'] >= min_area]
+
+        duration = time.time() - start
+        print('Created total %d branches, max/min area %.1f/%.3f km2, %d sec'%(
+                branch_lines.size, branch_lines['area'].max() / 1e6, branch_lines['area'].min() / 1e6,
+                duration))
+
+        if KEEP_SNAPSHOT:
+            keep_arrays(src_filename + '-3-', {
+                    'branch_lines': branch_lines,
+                })
+    elif RESUME_FROM_SNAPSHOT == 3:
+        dir_arr, = restore_arrays(src_filename + '-2-', {'dir_arr': None,})
+        branch_lines, = restore_arrays(src_filename + '-3-', {
+                    'branch_lines': BRANCH_LINE_DTYPE,
+                })
 
     if dst_ds:
         start = time.time()
@@ -646,22 +570,39 @@ def main(argv):
 
         # Add fields
         dst_layer.create_field('Name', gdal_utils.OFTString)    # KML <name>
+        dst_layer.create_field('Description', gdal_utils.OFTString) # KML <description>
         if FEATURE_OSM_NATURAL:
             dst_layer.create_field('natural', gdal_utils.OFTString) # OSM "natural" key
 
-        for entry in polylines:
+        geometries = 0
+        for branch in branch_lines:
+            # Extract the branch pixel coordinates and calculate length
+            x_y = branch['start_xy']
+            polyline = [x_y]
+            dist = 0.
+            while (x_y != branch['x_y']).any():
+                # Advance to the next point
+                new_xy = neighbor_xy(x_y, gdal_utils.read_arr(dir_arr, x_y))
+                dist += distance.get_distance(x_y, new_xy)
+                x_y = new_xy
+                polyline.append(x_y)
+
+            # Create actual geometry
             geom = dst_layer.create_feature_geometry(gdal_utils.wkbLineString)
-            dist = entry['dist']
             geom.set_field('Name', '%dm'%dist if dist < 10000 else '%dkm'%round(dist/1000))
+            geom.set_field('Description', 'length: %.1f km, area: %.1f km2'%(dist / 1e3, branch['area'] / 1e6))
             if FEATURE_OSM_NATURAL:
                 geom.set_field('natural', FEATURE_OSM_NATURAL(valleys))
             geom.set_style_string(VECTOR_FEATURE_STYLE(valleys))
+
             # Reverse the line to match the tracing direction
-            for x_y in entry['line'][::-1]:
+            for x_y in reversed(polyline):
                 geom.add_point(*dem_band.xy2lonlatalt(x_y))
             geom.create()
+            geometries += 1
+
         duration = time.time() - start
-        print('Created total %d geometries, %d sec'%(len(polylines), duration))
+        print('Created total %d geometries, %d sec'%(geometries, duration))
 
     return 0
 
