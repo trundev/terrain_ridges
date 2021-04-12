@@ -43,6 +43,9 @@ BYDVR_LAYER_OPTIONS = {
     'LIBKML': ['ADD_REGION=YES', 'FOLDER=YES'],
 }
 
+# Keep each branch-line one pixes away from its parent
+SEPARATED_BRANCHES = False
+
 #
 # Internal data-types, mostly for keep/resume support
 #
@@ -309,8 +312,8 @@ def arrange_lines(dir_arr, area_arr, trunks_only):
             keep_branch = not trunks_only
 
             # Update the end-point
-            branch['x_y'] = x_y
             if not is_stop:
+                branch['x_y'] = x_y
                 branch['area'] = area
 
         else:
@@ -581,6 +584,10 @@ def main(argv):
 
         geometries = 0
         for branch in branch_lines:
+            # Advance one step forward to connect to the parent branch
+            if not SEPARATED_BRANCHES:
+                x_y = branch['x_y']
+                branch['x_y'] = neighbor_xy_safe(x_y, gdal_utils.read_arr(dir_arr, x_y))
             # Extract the branch pixel coordinates and calculate length
             x_y = branch['start_xy']
             polyline = [x_y]
