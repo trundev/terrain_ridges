@@ -337,17 +337,23 @@ def arrange_lines(dir_arr, area_arr, trunks_only):
     assert (n_num <= 0).all(), 'Unprocessed pixels at %s'%numpy.array(numpy.nonzero(n_num > 0)).T
     return branch_lines
 
-def flip_line(dir_arr, x_y):
-    """Flip all 'n_dir'-s along a line"""
+def flip_lines(dir_arr, x_y):
+    """Flip all 'n_dir'-s along multiple lines"""
     prev_dir = gdal_utils.read_arr(dir_arr, x_y)
     gdal_utils.write_arr(dir_arr, x_y, NEIGHBOR_STOP)
     while True:
         n_xy = neighbor_xy(x_y, prev_dir)
         n_dir = gdal_utils.read_arr(dir_arr, n_xy)
         gdal_utils.write_arr(dir_arr, n_xy, neighbor_flip(prev_dir))
-        if neighbor_is_invalid(n_dir):
-            assert n_dir == NEIGHBOR_SEED or n_dir == NEIGHBOR_STOP
-            return n_xy
+
+        mask = neighbor_is_invalid(n_dir)
+        if mask.any():
+            assert ((n_dir[mask] == NEIGHBOR_SEED) | (n_dir[mask] == NEIGHBOR_STOP)).all()
+            if mask.all():
+                return dir_arr
+            mask = ~mask
+            n_xy = n_xy[mask]
+            n_dir = n_dir[mask]
 
         x_y = n_xy
         prev_dir = n_dir
@@ -491,10 +497,9 @@ def main(argv):
         branch_lines = arrange_lines(dir_arr, area_arr, True)
 
         # Actual flip
-        for x_y in branch_lines['start_xy']:
-            if flip_line(dir_arr, x_y) is None:
-                print('Error: Failed to flip branch at %s'%(x_y), file=sys.stderr)
-                return 2
+        if flip_lines(dir_arr, branch_lines['start_xy']) is None:
+            print('Error: Failed to flip %d branches'%(branch_lines.size), file=sys.stderr)
+            return 2
 
         duration = time.time() - start
         print('Flip & merge total %d trunk-branches, max/min area %.1f/%.3f km2, %d sec'%(
