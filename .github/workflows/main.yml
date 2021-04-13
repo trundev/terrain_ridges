@@ -31,10 +31,9 @@ env:
   DEF_SRC_URL: "http://tile.mtbmap.cz/Data/shadingdata/SRTMv2/N39E021.hgt.zip"
   DEF_DST_EXT: ".kml"
   DEF_GDALWARP_OPTIONS: ""  # Complete HGT-file (1201x1201)
-  # GDAL prebuilt package from https://gisinternals.com/release.php,
-  # will add ".zip" and "-libs.zip"
-  GDAL_URL_PREFIX: "https://download.gisinternals.com/sdk/downloads/release-1928-x64-gdal-3-2-1-mapserver-7-6-2"
-  GDAL_SRC_REF: "v3.2.2"
+  # GIS SDK release package from https://www.gisinternals.com/sdk.php
+  GIS_SDK_URL: "https://download.gisinternals.com/sdk/downloads/release-1928-x64-dev.zip"
+  GDAL_SRC_REF: "v3.3.0"
 
 jobs:
   generate:
@@ -75,7 +74,7 @@ jobs:
         path: |
           ${{ steps.pip-cache-dir.outputs.dir }}
           GDAL
-        key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}-${{ env.GDAL_URL_PREFIX }}
+        key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}-${{ env.GIS_SDK_URL }}
 
     - name: Clone GDAL sources
       if: steps.pip-cache.outputs.cache-hit != 'true'
@@ -85,44 +84,40 @@ jobs:
         ref: ${{ env.GDAL_SRC_REF }}
         path: GDAL
 
-    - name: Download GDAL release
+    - name: Download GIS SDK release
       if: steps.pip-cache.outputs.cache-hit != 'true'
       run: |
-        echo "URL prefix ${{ env.GDAL_URL_PREFIX }}"
-        ForEach ($postfix in ".zip", "-libs.zip") {
-          $SRC_URI = [uri]("${{ env.GDAL_URL_PREFIX }}" + $postfix)
-          $SRC_ZIP = $SRC_URI.Segments[-1]
-          echo "Downloading from $SRC_URI..."
-          Invoke-WebRequest -H @{Accept='application/octet-stream'} $SRC_URI -o $SRC_ZIP
-          if ($proc.ExitCode) {exit $proc.ExitCode}
-          Expand-Archive $SRC_ZIP -DestinationPath GDAL
-          if ($proc.ExitCode) {exit $proc.ExitCode}
-        }
+        $SRC_URI = [uri]("${{ env.GIS_SDK_URL }}")
+        $SRC_ZIP = $SRC_URI.Segments[-1]
+        echo "Downloading from $SRC_URI..."
+        Invoke-WebRequest -H @{Accept='application/octet-stream'} $SRC_URI -o $SRC_ZIP
+        if ($proc.ExitCode) {exit $proc.ExitCode}
+        Expand-Archive $SRC_ZIP -DestinationPath GDAL
 
     - name: Prepare for GDAL installation
       run: |
         $GDAL_BASE=Get-Item("GDAL")
+        $SDK_BASE=Get-Item $(Join-Path $GDAL_BASE "release-*")
 
-        $INCLUDE="$GDAL_BASE/include;$GDAL_BASE/gdal/gcore;$GDAL_BASE/gdal/gnm"
+        $INCLUDE="$GDAL_BASE/gdal/gcore;$GDAL_BASE/gdal/gnm;$SDK_BASE/include"
         echo "INCLUDE=$INCLUDE" >> ${env:GITHUB_ENV}
         echo "INCLUDE set to $INCLUDE"
 
-        $LIB="$GDAL_BASE/lib"
+        $LIB="$SDK_BASE/lib"
         echo "LIB=$LIB" >> ${env:GITHUB_ENV}
         echo "LIB set to $LIB"
 
-        $GDAL_DRIVER_PATH="$GDAL_BASE/bin/gdal/plugins"
+        $GDAL_DRIVER_PATH="$SDK_BASE/bin/gdal/plugins"
         echo "GDAL_DRIVER_PATH=$GDAL_DRIVER_PATH" >> ${env:GITHUB_ENV}
         echo "GDAL_DRIVER_PATH set to $GDAL_DRIVER_PATH"
 
-        $PROJ_LIB="$GDAL_BASE/bin/proj7/share"
+        $PROJ_LIB="$SDK_BASE/bin/proj7/share"
         echo "PROJ_LIB=$PROJ_LIB" >> ${env:GITHUB_ENV}
         echo "PROJ_LIB set to $PROJ_LIB"
 
         # Confusing ERROR messages workaround:
-        # Delete plugin DLLs that can't be loaded
-        del -EA SilentlyContinue $GDAL_DRIVER_PATH/gdal_GEOR.dll
-        del -EA SilentlyContinue $GDAL_DRIVER_PATH/ogr_OCI.dll
+        # Move plugin DLLs that can't be loaded to "plugins-optional"
+        Move-Item -EA SilentlyContinue $GDAL_DRIVER_PATH/gdal_GEOR.dll,$GDAL_DRIVER_PATH/ogr_OCI.dll $GDAL_DRIVER_PATH-optional
 
     - name: Install dependencies
       run: |
