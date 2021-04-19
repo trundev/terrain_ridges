@@ -314,11 +314,9 @@ def arrange_lines(dir_arr, area_arr, trunks_only):
         #
         bridge_mask = gdal_utils.read_arr(n_num == 1, mgrid_n_xy)
         bridge_mask &= valid_mask
-        cur_leafs = numpy.zeros(area_arr.shape, dtype=bool)
         pend_mask = numpy.ones(pend_lines.size, dtype=bool)
         x_y = pend_lines['x_y']
         while pend_mask.any():
-            gdal_utils.write_arr(cur_leafs, x_y, True)
             # Stop in front the graph nodes and at the "seeds"
             mask = gdal_utils.read_arr(bridge_mask, x_y)
             x_y = x_y[mask]
@@ -336,11 +334,9 @@ def arrange_lines(dir_arr, area_arr, trunks_only):
         mask = gdal_utils.read_arr(valid_mask, pend_lines['x_y'])
         if step_idx > 0:
             branch_lines = numpy.append(branch_lines, pend_lines[~mask])
+        else:
+            trim_cnt += numpy.count_nonzero(~mask)
         pend_lines = pend_lines[mask]
-        print('  Detected %d pixels in graph-bridges step %d, area %.2f km2, %d trunks'%(
-                numpy.count_nonzero(cur_leafs), step_idx,
-                area_arr[cur_leafs].sum() / 1e6,
-                numpy.count_nonzero(~mask)))
 
         #
         # Process the graph-node points one-by-one (only from non-last braches)
@@ -363,13 +359,18 @@ def arrange_lines(dir_arr, area_arr, trunks_only):
             gdal_utils.write_arr(area_arr, x_y, area + branch['area'])
 
             # Complete branch processing (trim or keep)
-            if not trunks_only:
-                if step_idx > 0:
-                    branch_lines = numpy.append(branch_lines, branch)
-                else:
-                    trim_cnt += 1
+            if not trunks_only and step_idx > 0:
+                branch_lines = numpy.append(branch_lines, branch)
+            else:
+                trim_cnt += 1
             pend_lines = numpy.delete(pend_lines, br_idx)
 
+        if step_idx % 100 == 0:
+            area = branch_lines['area'].max() if branch_lines.size else 0
+            if pend_lines.size:
+                area = max(area, pend_lines['area'].max())
+            print('  Process step %d, max. area %.2f km2, completed %d, pending %d, trimmed %d'%(step_idx,
+                    area / 1e6, branch_lines.size, pend_lines.size, trim_cnt))
         step_idx += 1
 
     # Confirm everything is processed
