@@ -257,6 +257,24 @@ def calc_pixel_area(distance, shape):
                        * distance.get_distance(mgrid_xy[mask], mgrid_xy_y[mask], True)
     return area_arr
 
+def get_branch_mask(x_y, mgrid_n_xy):
+    """Obtains total coverage mask of single branch"""
+    # Obtain mask(s) of the root point(s)
+    res_mask = numpy.zeros(mgrid_n_xy.shape[:-1], dtype=bool)
+    gdal_utils.write_arr(res_mask, x_y, True)
+    mask = gdal_utils.read_arr(res_mask, mgrid_n_xy)
+    # The AND-NOT is needed to drop the self-pointing graph-seeds
+    mask &= ~res_mask
+    while mask.any():
+        res_mask |= mask
+        mask = gdal_utils.read_arr(mask, mgrid_n_xy)
+    return res_mask
+
+def calc_branch_area(x_y, mgrid_n_xy, area_arr):
+    """Accumulate total coverage area of branch"""
+    mask = get_branch_mask(x_y, mgrid_n_xy)
+    return area_arr[mask].sum(-1)
+
 def arrange_lines(dir_arr, area_arr, trunks_only):
     """Arrange lines in branches by using the area of coverage"""
     area_arr = area_arr.copy()
@@ -582,8 +600,13 @@ def main(argv):
         if FEATURE_OSM_NATURAL:
             dst_layer.create_field('natural', gdal_utils.OFTString) # OSM "natural" key
 
+        # Note that mgrid_n_xy is for coverage area assert only
+        mgrid_n_xy = neighbor_xy_safe(get_mgrid(dir_arr.shape), dir_arr)
         geometries = 0
         for branch in branch_lines:
+            ar = calc_branch_area(branch['x_y'], mgrid_n_xy, area_arr)
+            assert int(branch['area']) == int(ar), 'Accumulated branch coverage area mismatch %.6f / %.6f km2'%(
+                    branch['area'] / 1e6, ar / 1e6)
             # Advance one step forward to connect to the parent branch
             if not SEPARATED_BRANCHES:
                 x_y = branch['x_y']
