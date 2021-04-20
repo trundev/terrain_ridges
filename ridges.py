@@ -474,12 +474,25 @@ def restore_arrays(prefix, arr_slices):
 #
 # Final geometry generation
 #
+def get_zoom_level(spatial_ref, area):
+    """Select min zoom level, where an area is visible"""
+    radius = spatial_ref.GetAttrValue('SPHEROID', 1)
+    if radius is None:
+        return None
+    # Approximate total area by using sphere surface area
+    radius = float(radius)
+    lvl0_area = 4 * numpy.pi * radius**2
+    return numpy.log2(lvl0_area / area) / 2
+
 class dst_layer_mgr:
     """Destination layer manager"""
-    def __init__(self, dst_ds, spatial_ref, valleys):
+    layer_set = {}
+
+    def __init__(self, dst_ds, spatial_ref, valleys, multi_layer):
         self.dst_ds = dst_ds
         self.spatial_ref = spatial_ref
         self.id_fmt = VECTOR_LAYER_NAME(valleys)
+        self.multi_layer = multi_layer
 
     def delete_all(self):
         """Delete all existing layers"""
@@ -487,19 +500,33 @@ class dst_layer_mgr:
             print('  Deleting layer', gdal_utils.gdal_vect_layer(self.dst_ds, i).get_name())
             self.dst_ds.delete_layer(i)
 
-    def get_layer(self):
+    def get_layer(self, branch):
         """Obtain/create layer for specific geometry"""
-        layer_options = DEF_LAYER_OPTIONS
+        # Select layer ID and chceck if it's already created
+        if self.multi_layer:
+            level = round(get_zoom_level(self.spatial_ref, branch['area']))
+            layer_id = self.id_fmt + '_level%d'%level
+            layer_options = ['NAME=' + self.id_fmt + ' - level %d'%level]
+        else:
+            layer_id = self.id_fmt
+            layer_options = []
+        if layer_id in self.layer_set:
+            return self.layer_set[layer_id]
+
+        # Add some more layer options
+        layer_options += DEF_LAYER_OPTIONS
         bydrv_options = BYDVR_LAYER_OPTIONS.get(self.dst_ds.get_drv_name())
         if bydrv_options:
             layer_options += bydrv_options
+        # Create the layer
         dst_layer = gdal_utils.gdal_vect_layer.create(self.dst_ds,
-                self.id_fmt,
+                layer_id,
                 srs=self.spatial_ref, geom_type=gdal_utils.wkbLineString,
                 options=layer_options)
         if dst_layer is None:
             print('Error: Unable to create layer', file=sys.stderr)
             return None
+        self.layer_set[layer_id] = dst_layer
 
         # Add fields
         dst_layer.create_field('Name', gdal_utils.OFTString)    # KML <name>
@@ -515,6 +542,8 @@ def main(argv):
     """Main entry"""
     valleys = False
     boundary_val = None
+    multi_layer = False
+    maxzoom_level = None
     truncate = True
     src_filename = dst_filename = None
     while argv:
@@ -526,6 +555,10 @@ def main(argv):
             elif argv[0] == '-boundary_val':
                 argv = argv[1:]
                 boundary_val = float(argv[0])
+            elif argv[0] == '-multi_layer':
+                argv = argv[1:]
+                multi_layer = True
+                maxzoom_level = float(argv[0])
             else:
                 return print_help('Unsupported option "%s"'%argv[0])
         else:
@@ -636,8 +669,14 @@ def main(argv):
         argsort = numpy.argsort(branch_lines['area'])
         branch_lines = numpy.take(branch_lines, argsort[::-1])
 
-        # Trim to 5 zoom-levels (1/1024 of max area)
-        min_area = area_arr.sum() / (4 ** 5)
+        if maxzoom_level is None:
+            # Trim to 5 zoom-levels (1/1024 of max area)
+            min_area = area_arr.sum() / (4 ** 5)
+        else:
+            # Trim to the area at 'maxzoom_level'
+            lvl = get_zoom_level(dem_band.get_spatial_ref(), 1)
+            min_area = 4 ** (lvl - maxzoom_level - .5)  # The .5 is to match round() used by dst_layer_mgr.get_layer()
+
         print('  Trimming total %d branches to min area of %.3f km2 (currently %.3f km2)'%(
                 branch_lines.size, min_area / 1e6, branch_lines['area'].min() / 1e6))
         branch_lines = branch_lines[branch_lines['area'] >= min_area]
@@ -660,15 +699,10 @@ def main(argv):
     if dst_ds:
         start = time.perf_counter()
 
-        layer_mgr = dst_layer_mgr(dst_ds, dem_band.get_spatial_ref(), valleys)
+        layer_mgr = dst_layer_mgr(dst_ds, dem_band.get_spatial_ref(), valleys, multi_layer)
         # Delete existing layers
         if truncate:
             layer_mgr.delete_all()
-
-        # Create new one
-        dst_layer = layer_mgr.get_layer()
-        if dst_layer is None:
-            return 1
 
         # Use a 'mgrid_n_xy' helper array, where each element points to its neighbor
         mgrid_n_xy = neighbor_xy_safe(get_mgrid(dir_arr.shape), dir_arr)
@@ -678,6 +712,11 @@ def main(argv):
             ar = calc_branch_area(branch['x_y'], mgrid_n_xy, area_arr)
             assert round(branch['area']) == round(ar), 'Accumulated branch coverage area mismatch %.6f / %.6f km2'%(
                     branch['area'] / 1e6, ar / 1e6)
+            # Select the layer, where to add the geometry, create if missing
+            dst_layer = layer_mgr.get_layer(branch)
+            if dst_layer is None:
+                return 1
+
             # Advance one step forward to connect to the parent branch
             if not SEPARATED_BRANCHES:
                 x_y = branch['x_y']
@@ -720,6 +759,7 @@ def print_help(err_msg=None):
     print('\t-h\t- This screen')
     print('\t-valley\t- Generate valleys, instead of ridges')
     print('\t-boundary_val <ele> - Treat the neighbors next to <ele> as boundary')
+    print('\t-multi_layer <maxzoom> - Create multiple layers upto a zoom-level (check OGR driver capabilities)')
     return 0 if err_msg is None else 255
 
 if __name__ == '__main__':
