@@ -247,14 +247,15 @@ class geod_distance:
 
     def get_distance(self, xy0, xy1, flat=False):
         """Calculate distance between two points"""
-        lonlatalt = self.dem_band.xy2lonlatalt(numpy.stack((xy0, xy1), axis=-2))
         if flat:
+            lonlat = self.dem_band.xy2lonlat(numpy.stack((xy0, xy1), axis=-2))
             disp = 0
         else:
+            lonlatalt = self.dem_band.xy2lonlatalt(numpy.stack((xy0, xy1), axis=-2))
+            lonlat = lonlatalt[...,:2]
             disp = lonlatalt[...,1,2] - lonlatalt[...,0,2]
         # Precise method by calling pyproj.Geod.inv() between points
-        lonlat = lonlatalt[...,:2].reshape([*lonlatalt.shape[:-2], -1])
-        lonlat = lonlat.T
+        lonlat = lonlat.reshape([*lonlat.shape[:-2], -1]).T
         _, _, dist = self.geod.inv(*lonlat)
         # The pyproj.Geod.inv() distance can be a scalar
         if not numpy.isscalar(dist):
@@ -267,7 +268,7 @@ class tm_distance(tm_transform):
     def __init__(self, dem_band):
         super(tm_distance, self).__init__(dem_band)
         # Transformation to Transverse Mercator with origin at the center of data
-        x_y = numpy.array(dem_band.get_elevation(True).shape) // 2
+        x_y = numpy.array(dem_band.shape) // 2
         self.build_xform(x_y)
 
     def get_distance(self, xy0, xy1, flat=False):
@@ -296,18 +297,20 @@ class draft_distance(tm_distance):
     def __init__(self, dem_band):
         super(draft_distance, self).__init__(dem_band)
         # Precalculate size of the pixel at the center of data
-        x_y = numpy.array(dem_band.get_elevation(True).shape) // 2
+        x_y = numpy.array(dem_band.shape) // 2
         self.pixel_size = self.get_pixel_size(x_y)
         print('Precalculated pixel size at', x_y, ':', self.pixel_size)
 
     def get_distance(self, xy0, xy1, flat=False):
         """Calculate distance between two points by using pre-calculated 'pixel_size'"""
-        # Get elevation displacements
-        alts = self.dem_band.get_elevation(numpy.stack((xy0, xy1), axis=-2))
-        disp = (alts[...,1] - alts[...,0])[...,numpy.newaxis]
         # Combine to the horizontal displacements
         vect = (xy1 - xy0) * self.pixel_size
-        vect = numpy.concatenate((vect, disp), axis=-1)
+        if not flat:
+            # Get elevation displacements
+            alts = self.dem_band.get_elevation(numpy.stack((xy0, xy1), axis=-2))
+            disp = (alts[...,1] - alts[...,0])[...,numpy.newaxis]
+            # Combine to the horizontal displacements
+            vect = numpy.concatenate((vect, disp), axis=-1)
         # Return the combined vector lengths
         return numpy.sqrt((vect * vect).sum(-1))
 
