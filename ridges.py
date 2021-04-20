@@ -472,6 +472,43 @@ def restore_arrays(prefix, arr_slices):
     return res_list
 
 #
+# Final geometry generation
+#
+class dst_layer_mgr:
+    """Destination layer manager"""
+    def __init__(self, dst_ds, spatial_ref, valleys):
+        self.dst_ds = dst_ds
+        self.spatial_ref = spatial_ref
+        self.id_fmt = VECTOR_LAYER_NAME(valleys)
+
+    def delete_all(self):
+        """Delete all existing layers"""
+        for i in reversed(range(self.dst_ds.get_layer_count())):
+            print('  Deleting layer', gdal_utils.gdal_vect_layer(self.dst_ds, i).get_name())
+            self.dst_ds.delete_layer(i)
+
+    def get_layer(self):
+        """Obtain/create layer for specific geometry"""
+        layer_options = DEF_LAYER_OPTIONS
+        bydrv_options = BYDVR_LAYER_OPTIONS.get(self.dst_ds.get_drv_name())
+        if bydrv_options:
+            layer_options += bydrv_options
+        dst_layer = gdal_utils.gdal_vect_layer.create(self.dst_ds,
+                self.id_fmt,
+                srs=self.spatial_ref, geom_type=gdal_utils.wkbLineString,
+                options=layer_options)
+        if dst_layer is None:
+            print('Error: Unable to create layer', file=sys.stderr)
+            return None
+
+        # Add fields
+        dst_layer.create_field('Name', gdal_utils.OFTString)    # KML <name>
+        dst_layer.create_field('Description', gdal_utils.OFTString) # KML <description>
+        if FEATURE_OSM_NATURAL:
+            dst_layer.create_field('natural', gdal_utils.OFTString) # OSM "natural" key
+        return dst_layer
+
+#
 # Main processing
 #
 def main(argv):
@@ -622,30 +659,16 @@ def main(argv):
 
     if dst_ds:
         start = time.perf_counter()
+
+        layer_mgr = dst_layer_mgr(dst_ds, dem_band.get_spatial_ref(), valleys)
         # Delete existing layers
         if truncate:
-            for i in reversed(range(dst_ds.get_layer_count())):
-                print('  Deleting layer', gdal_utils.gdal_vect_layer(dst_ds, i).get_name())
-                dst_ds.delete_layer(i)
+            layer_mgr.delete_all()
 
         # Create new one
-        layer_options = DEF_LAYER_OPTIONS
-        bydrv_options = BYDVR_LAYER_OPTIONS.get(dst_ds.get_drv_name())
-        if bydrv_options:
-            layer_options += bydrv_options
-        dst_layer = gdal_utils.gdal_vect_layer.create(dst_ds,
-                VECTOR_LAYER_NAME(valleys),
-                srs=dem_band.get_spatial_ref(), geom_type=gdal_utils.wkbLineString,
-                options=layer_options)
+        dst_layer = layer_mgr.get_layer()
         if dst_layer is None:
-            print('Error: Unable to create layer', file=sys.stderr)
             return 1
-
-        # Add fields
-        dst_layer.create_field('Name', gdal_utils.OFTString)    # KML <name>
-        dst_layer.create_field('Description', gdal_utils.OFTString) # KML <description>
-        if FEATURE_OSM_NATURAL:
-            dst_layer.create_field('natural', gdal_utils.OFTString) # OSM "natural" key
 
         # Use a 'mgrid_n_xy' helper array, where each element points to its neighbor
         mgrid_n_xy = neighbor_xy_safe(get_mgrid(dir_arr.shape), dir_arr)
