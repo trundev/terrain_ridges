@@ -774,8 +774,9 @@ def main(argv):
             geom = dst_layer.create_feature_geometry(gdal_utils.wkbLineString)
             geom.set_field('Name', '%dm'%dist if dist < 10000 else '%dkm'%round(dist/1000))
             lvl = round(get_zoom_level(dem_band.get_spatial_ref(), branch['area']), 1)
-            geom.set_field('Description', 'length: %.1f km, area: %.1f km2, level: %g'%(
-                    dist / 1e3, branch['area'] / 1e6, lvl))
+            geom.set_field('Description', 'length: %.1f km, area: %.6f km2, level: %g, %s - %s'%(
+                    dist / 1e3, branch['area'] / 1e6, lvl,
+                    branch['start_xy'], branch['x_y']))
             if FEATURE_OSM_NATURAL:
                 geom.set_field('natural', FEATURE_OSM_NATURAL(valleys))
             geom.set_field('zoom_level', lvl)
