@@ -17,7 +17,7 @@ def write_arr(arr, x_y, val):
     # Force numpy "Basic Indexing", note that '[x_y]' will trigger "Advanced Indexing"
     if numpy.isscalar(val):
         arr[tuple(x_y.T)] = val     # Performance optimization
-    elif arr.ndim <= x_y.shape[-1]:
+    elif x_y.ndim < 2 or arr.ndim <= x_y.shape[-1]:
         arr[tuple(x_y.T)] = val.T   # Performance optimization
     else:
         # Double-transpose trick does not work when 'arr' has extra dimentions
@@ -27,7 +27,7 @@ def write_arr(arr, x_y, val):
 def read_arr(arr, x_y):
     """Get multiple indices from array"""
     # Avoid numpy "Advanced Indexing"
-    if arr.ndim <= x_y.shape[-1]:
+    if x_y.ndim < 2 or arr.ndim <= x_y.shape[-1]:
         return arr[tuple(x_y.T)].T  # Performance optimization
     # Double-transpose trick does not work when 'arr' has extra dimentions
     x_y = numpy.moveaxis(x_y, -1, 0)

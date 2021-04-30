@@ -647,8 +647,9 @@ def main(argv):
         if FEATURE_OSM_NATURAL:
             dst_layer.create_field('natural', gdal_utils.OFTString) # OSM "natural" key
 
-        # Note that mgrid_n_xy is for coverage area assert only
+        # Use a 'mgrid_n_xy' helper array, where each element points to its neighbor
         mgrid_n_xy = neighbor_xy_safe(get_mgrid(dir_arr.shape), dir_arr)
+
         geometries = 0
         for branch in branch_lines:
             ar = calc_branch_area(branch['x_y'], mgrid_n_xy, area_arr)
@@ -657,14 +658,14 @@ def main(argv):
             # Advance one step forward to connect to the parent branch
             if not SEPARATED_BRANCHES:
                 x_y = branch['x_y']
-                branch['x_y'] = neighbor_xy_safe(x_y, gdal_utils.read_arr(dir_arr, x_y))
+                branch['x_y'] = gdal_utils.read_arr(mgrid_n_xy, x_y)
             # Extract the branch pixel coordinates and calculate length
             x_y = branch['start_xy']
             polyline = [x_y]
             dist = 0.
             while (x_y != branch['x_y']).any():
                 # Advance to the next point
-                new_xy = neighbor_xy(x_y, gdal_utils.read_arr(dir_arr, x_y))
+                new_xy = gdal_utils.read_arr(mgrid_n_xy, x_y)
                 dist += distance.get_distance(x_y, new_xy)
                 x_y = new_xy
                 polyline.append(x_y)
