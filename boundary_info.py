@@ -383,11 +383,55 @@ def create_dir_arr_geometries(dem_band, dir_arr, dst_ds):
 
     return dst_layer
 
+def create_coverage_geometries(dem_band, dir_arr, cov_xy, dst_ds):
+    """Create coverage area starting at specific points"""
+    #
+    # Helper arrays
+    #
+    # Helper array, where each pixel contains the coordinates of its neighbor
+    mgrid_n_xy = ridges.neighbor_xy_safe(ridges.get_mgrid(dir_arr.shape), dir_arr)
+
+    #
+    # Create the "Coverage" OGR layer
+    #
+    dst_layer = gdal_utils.gdal_vect_layer.create(dst_ds, 'dir_arr / Coverage',
+            srs=dem_band.get_spatial_ref(), geom_type=gdal_utils.wkbPolygon)
+    if dst_layer is None:
+        print('Error: Unable to create layer', file=sys.stderr)
+        return None
+
+    dst_layer.create_field('Name', gdal_utils.OFTString)    # KML <name>
+
+    for x_y in numpy.ndindex(cov_xy.shape[:-1]):
+        x_y = cov_xy[x_y]
+        print('Creating "Coverage" polygon starting at %d,%d'%(x_y[0], x_y[1]))
+        # Create the coverage start-point
+        geom = dst_layer.create_feature_geometry(gdal_utils.wkbPoint)
+        geom.set_field('Name', 'Point %d,%d'%(x_y[0], x_y[1]))
+        geom.add_point(*dem_band.xy2lonlat(x_y))
+        geom.create()
+
+        # Create coverage geometry
+        geom_mask = get_branch_mask(x_y, mgrid_n_xy)
+        if not create_geom_by_mask(dem_band, dst_layer, geom_mask, True,
+                'Point %d,%d coverage: {0}'%(x_y[0], x_y[1]),
+                DEM_SEED_COV_FEATURE_STYLE):
+            print('Warnig: Unable to create "leaf" geometries', file=sys.stderr)
+
+    return dst_layer
+
+def append_cov(cov_arr, entry):
+    """Handle --cov_XX options"""
+    if cov_arr is None:
+        return numpy.array([entry])
+    return numpy.append(cov_arr, [entry], axis=0)
+
 def main(argv):
     """Main entry"""
     truncate = True
     eval_str = None
     dir_arr = None
+    cov_xy = cov_coord = cov_lonlat = None
     src_filename = dst_filename = None
     while argv:
         if argv[0][0] == '-':
@@ -401,6 +445,15 @@ def main(argv):
             elif argv[0] == '--dir_arr':
                 argv = argv[1:]
                 dir_arr = argv[0]
+            elif argv[0] == '--cov_xy':
+                argv = argv[1:]
+                cov_xy = append_cov(cov_xy, [int(v) for v in argv[0].split(',', 1)])
+            elif argv[0] == '--cov_coord':
+                argv = argv[1:]
+                cov_coord = append_cov(cov_coord, [float(v) for v in argv[0].split(',', 1)])
+            elif argv[0] == '--cov_lonlat':
+                argv = argv[1:]
+                cov_lonlat = append_cov(cov_lonlat, [float(v) for v in argv[0].split(',', 1)])
             else:
                 return print_help('Unsupported option "%s"'%argv[0])
         else:
@@ -416,6 +469,10 @@ def main(argv):
     if src_filename is None or dst_filename is None:
         return print_help('Missing file-names')
 
+    if cov_xy is not None or cov_coord is not None or cov_lonlat is not None:
+        if dir_arr is None:
+            return print_help('Coverage option reqires --dir_arr')
+
     # Load DEM
     dem_band = gdal_utils.dem_open(src_filename)
     if dem_band is None:
@@ -426,6 +483,16 @@ def main(argv):
         return print_help('Unable to create "%s"'%src_filename)
 
     dem_band.load()
+
+    # Convert '--cov_coord' and '--cov_lonlat' to 'x_y' coordinates
+    if cov_coord is not None:
+        for x_y in dem_band.coords2xy(cov_coord):
+            cov_xy = append_cov(cov_xy, numpy.array(x_y, dtype=int))
+    del cov_coord
+    if cov_lonlat is not None:
+        for x_y in dem_band.lonlat2xy(cov_lonlat):
+            cov_xy = append_cov(cov_xy, numpy.array(x_y, dtype=int))
+    del cov_lonlat
 
     # Load 'dir_arr'
     if dir_arr is not None:
@@ -443,8 +510,12 @@ def main(argv):
         return 1
 
     if dir_arr is not None:
-        if create_dir_arr_geometries(dem_band, dir_arr, dst_ds) is None:
-            return 1
+        if cov_xy is None:
+            if create_dir_arr_geometries(dem_band, dir_arr, dst_ds) is None:
+                return 1
+        else:
+            if create_coverage_geometries(dem_band, dir_arr, cov_xy, dst_ds) is None:
+                return 1
 
     return 0
 
@@ -456,6 +527,8 @@ def print_help(err_msg=None):
     print('\t-h\t- This screen')
     print('\t-a\t- Append to the existing OGR geometry')
     print('\t--dir_arr <dir_arr-npy> - Create geometries from an "dir_arr" (n_dir) npy-file')
+    print('\t--cov_xy <x>,<y> | --cov_coord <h>,<v> | --cov_lonlat <lon>,<lat>')
+    print('\t                        - Create coverage geometry starting at point (requiers "--dir_arr")')
     print('\t--calc <eval-expt>      - Create geometries from an eval() expression')
     print('\t\tThe "A" is a numpy array with the DEM elevations, examples:')
     print('\t\t  "A<1000"         -- Elevations under 1000m')
