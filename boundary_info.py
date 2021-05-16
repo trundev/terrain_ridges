@@ -63,6 +63,19 @@ class expand_mask:
                 return src_mask
             src_mask = mask
 
+def get_branch_mask(x_y, mgrid_n_xy):
+    """Obtains total coverage mask of single branch"""
+    # Mask-out all pixels descending from this 'seed'
+    res_mask = numpy.zeros(shape=mgrid_n_xy.shape[:-1], dtype=bool)
+    gdal_utils.write_arr(res_mask, x_y, True)
+    # Select the neighbors pointing to the masked pixels by using 'mgrid_n_xy'
+    # The initial mask must be removed as it will pass thru - its 'mgrid_n_xy' points to them-self
+    mask = gdal_utils.read_arr(res_mask, mgrid_n_xy) ^ res_mask
+    while mask.any():
+        res_mask |= mask
+        mask = gdal_utils.read_arr(mask, mgrid_n_xy)
+    return res_mask
+
 def create_ring_by_mask(dst_layer, dem_band, mask, outside):
     """Create ring geometry around masked pixels"""
     ring = dst_layer.create_feature_geometry(gdal_utils.wkbLinearRing)
@@ -307,21 +320,9 @@ def create_dir_arr_geometries(dem_band, dir_arr, dst_ds):
         s_xy = numpy.array(numpy.unravel_index(seed_mask.argmax(), seed_mask.shape))
         gdal_utils.write_arr(seed_mask, s_xy, False)
 
-        # Mask-out all pixels descending from this 'seed'
-        geom_mask = numpy.zeros(shape=dir_arr.shape, dtype=bool)
-        gdal_utils.write_arr(geom_mask, s_xy, True)
-        # Select the neighbors pointing to the masked pixels by using 'mgrid_n_xy'
-        # The initial mask must be removed as it will pass thru - its 'mgrid_n_xy' points to them-self
-        mask = gdal_utils.read_arr(geom_mask, mgrid_n_xy) ^ geom_mask
-        leaf_only = True
-        while mask.any():
-            # Detect "leaf-only" regions
-            if leaf_only and (n_num[mask] > 1).any():
-                leaf_only = False
-            geom_mask |= mask
-            mask = gdal_utils.read_arr(mask, mgrid_n_xy)
-        # Drop "leaf-only" regions
-        if leaf_only:
+        geom_mask = get_branch_mask(s_xy, mgrid_n_xy)
+        # Detect "leaf-only" regions
+        if (n_num[geom_mask] <= 1).all():
             n_leaf_only += 1
             continue
 
