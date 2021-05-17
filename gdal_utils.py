@@ -65,8 +65,7 @@ class gdal_dataset:
         """Convert raster (x,y) to projection coordinate(s)"""
         # Add ones in front of the coordinates to handle translation
         # Note that GetGeoTransform() returns translation components at index 0
-        ones = numpy.broadcast_to([1], [*x_y.shape[:-1], 1])
-        x_y = numpy.concatenate((ones, x_y), axis=-1)
+        x_y = numpy.concatenate((numpy.ones(x_y.shape[:-1] + (1,)), x_y), axis=-1)
 
         # This is matmul() but x_y is always treated as a set of one-dimentional vectors
         x_y = x_y[...,numpy.newaxis,:]
@@ -75,6 +74,10 @@ class gdal_dataset:
     def build_srs_xform(self, tgt_srs):
         """Create transformation to another SRS"""
         return osr.CoordinateTransformation(self.get_spatial_ref(), tgt_srs)
+
+    def build_inv_srs_xform(self, src_srs):
+        """Create transformation from another SRS"""
+        return osr.CoordinateTransformation(src_srs, self.get_spatial_ref())
 
     def build_geogcs_xform(self):
         """Create transformation to GEOGCS, 'None' if not needed"""
@@ -185,6 +188,30 @@ class gdal_dem_band(gdal_dataset):
         else:
             alt = read_arr(self.dem_buf, x_y)
         return alt
+
+    def coords2xy(self, coords):
+        """Convert dataset's SRS coordinate(s) to raster (x,y)"""
+        # Convert the affine transformation matrix and coordinates to 3x3 form
+        xform = numpy.roll(self.xform, -1, axis=-1)
+        xform = numpy.concatenate((xform, [[0,0,1]]))
+        coords = numpy.concatenate((coords, numpy.ones(coords.shape[:-1] + (1,))), axis=-1)
+        # Invert the transformation matrix
+        xform = numpy.linalg.inv(xform)
+        # This is matmul() but coords is always treated as a set of one-dimentional vectors
+        # See affine_xform()
+        coords = coords[...,numpy.newaxis,:]
+        return (xform * coords).sum(-1)[...,:-1]
+
+    def lonlat2xy(self, lonlat):
+        """Convert lon/lan (east,north) coordinates(s) to raster (x,y)"""
+        if self.geogcs_xform is None:
+            # The dataset is in geographic coordinates
+            coords = lonlat
+        else:
+            # Transform to the dataset coordinates, see build_geogcs_xform()
+            to_geogcs_xform = self.build_inv_srs_xform(self.get_spatial_ref().CloneGeogCS())
+            coords = self.coord_xform(to_geogcs_xform, lonlat)
+        return self.coords2xy(coords)
 
     def xy2coords(self, x_y, center=True):
         """Convert raster (x,y) to the dataset's SRS coordinate(s)"""
