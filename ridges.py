@@ -21,7 +21,9 @@ SEED_INFLATE = 1
 DISTANCE_METHOD = 0
 
 def VECTOR_LAYER_NAME(valleys): return 'valleys' if valleys else 'ridges'
-def VECTOR_FEATURE_STYLE(valleys): return 'PEN(c:#0000FF,w:2px)' if valleys else 'PEN(c:#FF0000,w:2px)'
+def VECTOR_FEATURE_STYLE(valleys, lvl):
+    """Select feature style: valley: blue, ridge: red; zoom-level 8-14: width 8px-2px"""
+    return 'PEN(c:#%s,w:%dpx)'%('0000FF' if valleys else 'FF0000', min(max(2, 16 - lvl), 8))
 # Value for the OSM "natural" keys, to allow conversion to .osm
 # by ogr2osm.py or JOSM (opendata plugin)
 #   https://wiki.openstreetmap.org/wiki/Tag:natural%3Dridge
@@ -511,6 +513,7 @@ class dst_layer_mgr:
         dst_layer.create_field('Description', gdal_utils.OFTString) # KML <description>
         if FEATURE_OSM_NATURAL:
             dst_layer.create_field('natural', gdal_utils.OFTString) # OSM "natural" key
+        dst_layer.create_field('zoom_level', gdal_utils.OFTReal)
         return dst_layer
 
 def filter_mgrid(mgrid_n_xy, start_xy):
@@ -770,10 +773,13 @@ def main(argv):
             # Create actual geometry
             geom = dst_layer.create_feature_geometry(gdal_utils.wkbLineString)
             geom.set_field('Name', '%dm'%dist if dist < 10000 else '%dkm'%round(dist/1000))
-            geom.set_field('Description', 'length: %.1f km, area: %.1f km2'%(dist / 1e3, branch['area'] / 1e6))
+            lvl = round(get_zoom_level(dem_band.get_spatial_ref(), branch['area']), 1)
+            geom.set_field('Description', 'length: %.1f km, area: %.1f km2, level: %g'%(
+                    dist / 1e3, branch['area'] / 1e6, lvl))
             if FEATURE_OSM_NATURAL:
                 geom.set_field('natural', FEATURE_OSM_NATURAL(valleys))
-            geom.set_style_string(VECTOR_FEATURE_STYLE(valleys))
+            geom.set_field('zoom_level', lvl)
+            geom.set_style_string(VECTOR_FEATURE_STYLE(valleys, lvl))
 
             # Reverse the line to match the tracing direction
             for x_y in reversed(polyline):
