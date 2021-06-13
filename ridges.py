@@ -257,6 +257,18 @@ def calc_pixel_area(distance, shape):
                        * distance.get_distance(mgrid_xy[mask], mgrid_xy_y[mask], True)
     return area_arr
 
+def accumulate_by_mgrid(src_arr, mgrid_n_xy):
+    """Accumulate array values into their next points in graph, esp. for graph-nodes"""
+    res_arr = numpy.zeros_like(src_arr)
+    # To avoid '+=' overlapping, the accumulation is performed by using unbuffered in place
+    # operation, see "numpy.ufunc.at".
+    indices = numpy.moveaxis(mgrid_n_xy, -1, 0)
+    numpy.add.at(res_arr, tuple(indices), src_arr)
+
+    assert abs(numpy.nansum(res_arr) - numpy.nansum(src_arr)) * 1e6 <= numpy.nanmax(src_arr), \
+            f'Total sum deviation {numpy.nansum(res_arr) - numpy.nansum(src_arr)}'
+    return res_arr
+
 def get_branch_mask(x_y, mgrid_n_xy):
     """Obtains total coverage mask of single branch"""
     # Obtain mask(s) of the root point(s)
@@ -275,23 +287,21 @@ def calc_branch_area(x_y, mgrid_n_xy, area_arr):
     mask = get_branch_mask(x_y, mgrid_n_xy)
     return area_arr[mask].sum(-1)
 
-def arrange_lines(dir_arr, area_arr, trunks_only):
+def arrange_lines(mgrid_n_xy, area_arr, trunks_only):
     """Arrange lines in branches by using the area of coverage"""
     area_arr = area_arr.copy()
+
+    # Helper 'valid_mask' array where mgrid_n_xy are NOT self-pointers
+    valid_mask = (mgrid_n_xy != get_mgrid(mgrid_n_xy.shape[:-1])).any(-1)
+
     # Count the number of neighbors pointing to each pixel
     # Only the last branch that reaches a pixel continues forward, others stop there.
     # As the branches are processed starting from the one with less coverage-area, this
     # allows the largest one to reach the graph-seed.
-    mgrid_n_xy = neighbor_xy_safe(get_mgrid(dir_arr.shape), dir_arr)
-    n_num = numpy.zeros(dir_arr.shape, dtype=int)
-    for d in VALID_NEIGHBOR_DIRS:
-        n_xy = mgrid_n_xy[dir_arr == d]
-        n = numpy.zeros_like(n_num)
-        gdal_utils.write_arr(n, n_xy, 1)
-        n_num += n
-    del n_xy, n
+    n_num = numpy.ones_like(area_arr, dtype=int)
+    n_num[~valid_mask] = 0
+    n_num = accumulate_by_mgrid(n_num, mgrid_n_xy)
     # Put -1 at invalid nodes, except the "real" seeds (distinguish from the "leafs")
-    valid_mask = ~neighbor_is_invalid(dir_arr)
     n_num[~valid_mask & (n_num == 0)] = -1
     all_leafs = n_num == 0
     print('Detected %d "leaf" and %d "real-seed" pixels'%(
@@ -399,26 +409,22 @@ def arrange_lines(dir_arr, area_arr, trunks_only):
     assert (n_num <= 0).all(), 'Unprocessed pixels at %s'%numpy.array(numpy.nonzero(n_num > 0)).T
     return branch_lines
 
-def flip_lines(dir_arr, x_y):
+def flip_lines(mgrid_n_xy, x_y):
     """Flip all 'n_dir'-s along multiple lines"""
-    prev_dir = gdal_utils.read_arr(dir_arr, x_y)
-    gdal_utils.write_arr(dir_arr, x_y, NEIGHBOR_STOP)
+    n_xy = gdal_utils.read_arr(mgrid_n_xy, x_y)
+    gdal_utils.write_arr(mgrid_n_xy, x_y, x_y)
     while True:
-        n_xy = neighbor_xy(x_y, prev_dir)
-        n_dir = gdal_utils.read_arr(dir_arr, n_xy)
-        gdal_utils.write_arr(dir_arr, n_xy, neighbor_flip(prev_dir))
-
-        mask = neighbor_is_invalid(n_dir)
-        if mask.any():
-            assert ((n_dir[mask] == NEIGHBOR_SEED) | (n_dir[mask] == NEIGHBOR_STOP)).all()
-            if mask.all():
-                return dir_arr
-            mask = ~mask
+        prev_n_xy = gdal_utils.read_arr(mgrid_n_xy, n_xy)
+        gdal_utils.write_arr(mgrid_n_xy, n_xy, x_y)
+        mask = (prev_n_xy != n_xy).any(-1)
+        if not mask.all():
+            if not mask.any():
+                return mgrid_n_xy
             n_xy = n_xy[mask]
-            n_dir = n_dir[mask]
+            prev_n_xy = prev_n_xy[mask]
 
         x_y = n_xy
-        prev_dir = n_dir
+        n_xy = prev_n_xy
 
 #
 # Keep/resume support
@@ -601,10 +607,14 @@ def main(argv):
         duration = time.perf_counter() - start
         print('Traced through %d/%d points, %d sec'%(numpy.count_nonzero(~neighbor_is_invalid(dir_arr)), dir_arr.size, duration))
 
+        # Convert 'dir_arr' to 'mgrid_n_xy' array, where each element points to its neighbor
+        mgrid_n_xy = neighbor_xy_safe(get_mgrid(dir_arr.shape), dir_arr)
+        del dir_arr
+
         if KEEP_SNAPSHOT:
-            keep_arrays(src_filename + '-1-', {'dir_arr': dir_arr,})
+            keep_arrays(src_filename + '-1-', {'mgrid_n_xy': mgrid_n_xy,})
     elif RESUME_FROM_SNAPSHOT == 1:
-        dir_arr, = restore_arrays(src_filename + '-1-', {'dir_arr': None,})
+        mgrid_n_xy, = restore_arrays(src_filename + '-1-', {'mgrid_n_xy': None,})
 
     #
     # The coverage-area of each pixels is needed by arrange_lines()
@@ -626,13 +636,13 @@ def main(argv):
         start = time.perf_counter()
 
         # Arrange branches to select which one to flip (trunks_only)
-        branch_lines = arrange_lines(dir_arr, area_arr, True)
+        branch_lines = arrange_lines(mgrid_n_xy, area_arr, True)
         if branch_lines is None or branch_lines.size == 0:
             print('Error: Unable to identify any branch', file=sys.stderr)
             return 2
 
         # Actual flip
-        if flip_lines(dir_arr, branch_lines['start_xy']) is None:
+        if flip_lines(mgrid_n_xy, branch_lines['start_xy']) is None:
             print('Error: Failed to flip %d branches'%(branch_lines.size), file=sys.stderr)
             return 2
 
@@ -643,12 +653,12 @@ def main(argv):
 
         if KEEP_SNAPSHOT:
             keep_arrays(src_filename + '-2-', {
-                    'dir_arr': dir_arr,
+                    'mgrid_n_xy': mgrid_n_xy,
                     'branch_lines': branch_lines,
                 })
     elif RESUME_FROM_SNAPSHOT == 2:
-        dir_arr, branch_lines = restore_arrays(src_filename + '-2-', {
-                    'dir_arr': None,
+        mgrid_n_xy, branch_lines = restore_arrays(src_filename + '-2-', {
+                    'mgrid_n_xy': None,
                     'branch_lines': BRANCH_LINE_DTYPE,
                 })
 
@@ -660,7 +670,7 @@ def main(argv):
         start = time.perf_counter()
 
         # Arrange branches
-        branch_lines = arrange_lines(dir_arr, area_arr, False)
+        branch_lines = arrange_lines(mgrid_n_xy, area_arr, False)
         if branch_lines is None or branch_lines.size == 0:
             print('Error: Unable to identify any branch', file=sys.stderr)
             return 2
@@ -691,7 +701,9 @@ def main(argv):
                     'branch_lines': branch_lines,
                 })
     elif RESUME_FROM_SNAPSHOT == 3:
-        dir_arr, = restore_arrays(src_filename + '-2-', {'dir_arr': None,})
+        mgrid_n_xy, = restore_arrays(src_filename + '-2-', {
+                    'mgrid_n_xy': None,
+                })
         branch_lines, = restore_arrays(src_filename + '-3-', {
                     'branch_lines': BRANCH_LINE_DTYPE,
                 })
@@ -703,9 +715,6 @@ def main(argv):
         # Delete existing layers
         if truncate:
             layer_mgr.delete_all()
-
-        # Use a 'mgrid_n_xy' helper array, where each element points to its neighbor
-        mgrid_n_xy = neighbor_xy_safe(get_mgrid(dir_arr.shape), dir_arr)
 
         geometries = 0
         for branch in branch_lines:
