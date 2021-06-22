@@ -45,6 +45,8 @@ BYDVR_LAYER_OPTIONS = {
 
 # Keep each branch-line one pixes away from its parent
 SEPARATED_BRANCHES = False
+# Suppress the jagged geometry effect, caused by the DEM resolution
+SMOOTHEN_GEOMETRY = False
 
 #
 # Internal data-types, mostly for keep/resume support
@@ -538,6 +540,47 @@ class dst_layer_mgr:
             dst_layer.create_field('natural', gdal_utils.OFTString) # OSM "natural" key
         return dst_layer
 
+def filter_mgrid(mgrid_n_xy, start_xy):
+    """Keep only points reachable from 'start_xy', invalidate others"""
+    # Start with mask at 'start_xy'
+    pend_mask = numpy.zeros(shape=mgrid_n_xy.shape[:-1], dtype=bool)
+    gdal_utils.write_arr(pend_mask, start_xy, True)
+    mask = pend_mask.copy()
+    while mask.any():
+        # Contract the mask
+        gdal_utils.write_arr(mask, mgrid_n_xy[mask], True)
+        mask &= ~pend_mask
+        pend_mask |= mask
+
+    # Invalidate selected points, by making them self-pointing
+    mgrid_xy = get_mgrid(mgrid_n_xy.shape[:-1])
+    return numpy.where(pend_mask[...,numpy.newaxis], mgrid_n_xy, mgrid_xy)
+
+def smoothen_by_mgrid(lonlatalt, mgrid_n_xy):
+    """Average each point with its neighbors"""
+    # Count the number of neighbors pointing to each pixel
+    n_num = numpy.ones(shape=lonlatalt.shape[:-1], dtype=int)
+    n_num = accumulate_by_mgrid(n_num, mgrid_n_xy)
+    # Get mask of 'leaf' and 'seed' points
+    keep_mask = (mgrid_n_xy == get_mgrid(mgrid_n_xy.shape[:-1])).all(-1)
+    keep_mask |= n_num == 0
+
+    # Sum of coordinates of neighbors pointing to each point (total n_num)
+    lla_sum = accumulate_by_mgrid(lonlatalt, mgrid_n_xy)
+    # Add the coordinates of neighbor pointed from each point (total 1)
+    lla_sum += gdal_utils.read_arr(lonlatalt, mgrid_n_xy)
+    n_num += 1
+    # Add the up-scaled coordinates of the point itself
+    # (scaling gives more weight against the neighbor points)
+    n_num = n_num[...,numpy.newaxis]
+    lla_sum += lonlatalt * n_num
+    n_num += n_num
+
+    # Keep 'leaf' and 'seed' points intact
+    lla_sum[keep_mask] = lonlatalt[keep_mask]
+    n_num[keep_mask] = 1
+    return lla_sum / n_num
+
 #
 # Main processing
 #
@@ -713,6 +756,11 @@ def main(argv):
         if truncate:
             layer_mgr.delete_all()
 
+        # Generate x_y to lon/lat/alt conversion grid
+        mgrid_lonlatalt = dem_band.xy2lonlatalt(get_mgrid(dem_band.shape))
+        if SMOOTHEN_GEOMETRY:
+            mgrid_lonlatalt = smoothen_by_mgrid(mgrid_lonlatalt, filter_mgrid(mgrid_n_xy, branch_lines['start_xy']))
+
         geometries = 0
         for branch in branch_lines:
             ar = calc_branch_area(branch['x_y'], mgrid_n_xy, area_arr)
@@ -748,7 +796,7 @@ def main(argv):
 
             # Reverse the line to match the tracing direction
             for x_y in reversed(polyline):
-                geom.add_point(*dem_band.xy2lonlatalt(x_y))
+                geom.add_point(*gdal_utils.read_arr(mgrid_lonlatalt, x_y))
             geom.create()
             geometries += 1
 
