@@ -348,51 +348,48 @@ def arrange_lines(mgrid_n_xy, area_arr, trunks_only):
             numpy.count_nonzero(all_leafs), pend_lines['area'].sum() / 1e6,
             numpy.count_nonzero(~mask)))
 
-    # Update the accumulated area, but only at the stop-points (in front the graph-nodes)
-    gdal_utils.write_arr(area_arr, pend_lines['x_y'], pend_lines['area'])
+    #
+    # Process the rest of branches one by one, by advancing the smallest one
+    # Keep the list sorted in ascending coverage-area order
+    #
+    argsort = numpy.argsort(pend_lines['area'])
+    pend_lines = numpy.take(pend_lines, argsort)
 
     branch_lines = numpy.empty_like(pend_lines, shape=[0])
     trim_cnt = 0
     progress_idx = 0
     while pend_lines.size:
         # Process the branch with minimal coverage-area
-        br_idx = pend_lines['area'].argmin()
-        branch = pend_lines[br_idx]
+        branch = pend_lines[0]
+        pend_lines = pend_lines[1:]
         x_y = branch['x_y']
-        area = gdal_utils.read_arr(area_arr, x_y)
-        assert branch['area'] <= area, 'Branch area decreases at %s: %f -> %f m2'%(x_y, branch['area'], area)
         if gdal_utils.read_arr(valid_mask, x_y):
             # Advance to the next point
             x_y = gdal_utils.read_arr(mgrid_n_xy, x_y)
             # Accumulate the coverage-area
-            area += gdal_utils.read_arr(area_arr, x_y)
-            gdal_utils.write_arr(area_arr, x_y, area)
+            area = branch['area'] + gdal_utils.read_arr(area_arr, x_y)
 
             # Handle node-bridges counter: only the last branch to proceed further
             n = gdal_utils.read_arr(n_num, x_y)
-            assert n > 0
-            gdal_utils.write_arr(n_num, x_y, n - 1)
-            # Stop at graph-node (non-last branches)
-            is_stop = n > 1
-            keep_branch = not trunks_only
-
-            # Update the end-point
-            if not is_stop:
+            if n == 1:
                 branch['x_y'] = x_y
                 branch['area'] = area
-
+                pend_lines = sorted_arr_insert(pend_lines, branch, 'area')
+                keep_branch = False
+            else:
+                gdal_utils.write_arr(n_num, x_y, n - 1)
+                gdal_utils.write_arr(area_arr, x_y, area)
+                keep_branch = not trunks_only
         else:
             # Stop at graph-seed (trunk branch)
-            keep_branch = is_stop = True
+            keep_branch = True
 
-        if is_stop:
-            # Discard the "leaf" branches, with "trunks_only" -- non-trunk branches
-            if keep_branch:
-                if False == gdal_utils.read_arr(all_leafs, branch['x_y']):
-                    branch_lines = numpy.append(branch_lines, branch)
-                else:
-                    trim_cnt += 1
-            pend_lines = numpy.delete(pend_lines, br_idx)
+        # Discard the "leaf" branches, with "trunks_only" -- non-trunk branches
+        if keep_branch:
+            if False == gdal_utils.read_arr(all_leafs, branch['x_y']):
+                branch_lines = numpy.append(branch_lines, branch)
+            else:
+                trim_cnt += 1
 
         #
         # Progress, each 10000-th step
@@ -406,7 +403,7 @@ def arrange_lines(mgrid_n_xy, area_arr, trunks_only):
         progress_idx += 1
 
     # Confirm everything is processed
-    assert (n_num <= 0).all(), 'Unprocessed pixels at %s'%numpy.array(numpy.nonzero(n_num > 0)).T
+    assert (n_num <= 1).all(), 'Unprocessed pixels at %s'%numpy.array(numpy.nonzero(n_num > 0)).T
     return branch_lines
 
 def flip_lines(mgrid_n_xy, x_y):
