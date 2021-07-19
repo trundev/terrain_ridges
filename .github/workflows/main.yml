@@ -28,12 +28,12 @@ env:
   DST_EXT: "${{ github.event.inputs.DST_EXT }}"
   TOOL_OPTIONS: "${{ github.event.inputs.TOOL_OPTIONS }}"
   GDALWARP_OPTIONS: "${{ github.event.inputs.GDALWARP_OPTIONS }}"
-  DEF_SRC_URL: "http://tile.mtbmap.cz/Data/shadingdata/SRTMv2/N39E021.hgt.zip"
+  DEF_SRC_URL: "https://www.iea-software.com/ftp/Emeraldv6/Geography/Eurasia/Elevations/SRTM3/N39E021.hgt.zip"
   DEF_DST_EXT: ".kml"
   DEF_GDALWARP_OPTIONS: ""  # Complete HGT-file (1201x1201)
   # GIS SDK release package from https://www.gisinternals.com/sdk.php
   GIS_SDK_URL: "https://download.gisinternals.com/sdk/downloads/release-1928-x64-dev.zip"
-  GDAL_SRC_REF: "v3.3.0"
+  GDAL_SRC_REF: "v3.3.2"
 
 jobs:
   generate:
@@ -147,7 +147,7 @@ jobs:
           echo "Downloading DEM from $url..."
           $SRC_URI = [uri]"$url"
           $SRC_ZIP = $SRC_URI.Segments[-1]
-          Invoke-WebRequest -H @{Accept='application/octet-stream'} $SRC_URI -o $SRC_ZIP
+          Invoke-WebRequest -H @{Accept='application/octet-stream,application/x-zip-compressed'} $SRC_URI -o $SRC_ZIP
           if ($proc.ExitCode) {exit $proc.ExitCode}
           echo "Unzipping $SRC_ZIP..."
           Expand-Archive $SRC_ZIP -DestinationPath ${{ env.SRC_DEM_DIR }}
