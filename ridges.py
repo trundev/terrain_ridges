@@ -520,7 +520,7 @@ def main(argv):
     #
     if RESUME_FROM_SNAPSHOT < 1:
 
-        start = time.time()
+        start = time.perf_counter()
 
         # Actual trace
         dir_arr = trace_ridges(dem_band, valleys, boundary_val)
@@ -528,7 +528,7 @@ def main(argv):
             print('Error: Failed to trace ridges', file=sys.stderr)
             return 2
 
-        duration = time.time() - start
+        duration = time.perf_counter() - start
         print('Traced through %d/%d points, %d sec'%(numpy.count_nonzero(~neighbor_is_invalid(dir_arr)), dir_arr.size, duration))
 
         if KEEP_SNAPSHOT:
@@ -553,17 +553,20 @@ def main(argv):
     #
     if RESUME_FROM_SNAPSHOT < 2:
 
-        start = time.time()
+        start = time.perf_counter()
 
         # Arrange branches to select which one to flip (trunks_only)
         branch_lines = arrange_lines(dir_arr, area_arr, True)
+        if branch_lines is None or branch_lines.size == 0:
+            print('Error: Unable to identify any branch', file=sys.stderr)
+            return 2
 
         # Actual flip
         if flip_lines(dir_arr, branch_lines['start_xy']) is None:
             print('Error: Failed to flip %d branches'%(branch_lines.size), file=sys.stderr)
             return 2
 
-        duration = time.time() - start
+        duration = time.perf_counter() - start
         print('Flip & merge total %d trunk-branches, max/min area %.1f/%.3f km2, %d sec'%(
                 branch_lines.size, branch_lines['area'].max() / 1e6, branch_lines['area'].min() / 1e6,
                 duration))
@@ -584,10 +587,13 @@ def main(argv):
     #
     if RESUME_FROM_SNAPSHOT < 3:
 
-        start = time.time()
+        start = time.perf_counter()
 
         # Arrange branches
         branch_lines = arrange_lines(dir_arr, area_arr, False)
+        if branch_lines is None or branch_lines.size == 0:
+            print('Error: Unable to identify any branch', file=sys.stderr)
+            return 2
 
         # Sort the the generated branches (descending 'area' order)
         argsort = numpy.argsort(branch_lines['area'])
@@ -599,7 +605,7 @@ def main(argv):
                 branch_lines.size, min_area / 1e6, branch_lines['area'].min() / 1e6))
         branch_lines = branch_lines[branch_lines['area'] >= min_area]
 
-        duration = time.time() - start
+        duration = time.perf_counter() - start
         print('Created total %d branches, max/min area %.1f/%.3f km2, %d sec'%(
                 branch_lines.size, branch_lines['area'].max() / 1e6, branch_lines['area'].min() / 1e6,
                 duration))
@@ -615,7 +621,7 @@ def main(argv):
                 })
 
     if dst_ds:
-        start = time.time()
+        start = time.perf_counter()
         # Delete existing layers
         if truncate:
             for i in reversed(range(dst_ds.get_layer_count())):
@@ -646,7 +652,7 @@ def main(argv):
         geometries = 0
         for branch in branch_lines:
             ar = calc_branch_area(branch['x_y'], mgrid_n_xy, area_arr)
-            assert int(branch['area']) == int(ar), 'Accumulated branch coverage area mismatch %.6f / %.6f km2'%(
+            assert round(branch['area']) == round(ar), 'Accumulated branch coverage area mismatch %.6f / %.6f km2'%(
                     branch['area'] / 1e6, ar / 1e6)
             # Advance one step forward to connect to the parent branch
             if not SEPARATED_BRANCHES:
@@ -677,7 +683,7 @@ def main(argv):
             geom.create()
             geometries += 1
 
-        duration = time.time() - start
+        duration = time.perf_counter() - start
         print('Created total %d geometries, %d sec'%(geometries, duration))
 
     return 0
