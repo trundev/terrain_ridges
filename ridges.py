@@ -47,6 +47,8 @@ BYDVR_LAYER_OPTIONS = {
 SEPARATED_BRANCHES = False
 # Suppress the jagged geometry effect, caused by the DEM resolution
 SMOOTHEN_GEOMETRY = False
+# Run extra (slow) internal tests
+EXTRA_ASSERTS = False
 
 #
 # Internal data-types, mostly for keep/resume support
@@ -605,6 +607,8 @@ def main(argv):
                 argv = argv[1:]
                 multi_layer = True
                 maxzoom_level = float(argv[0])
+                if not maxzoom_level:
+                    maxzoom_level = None
             else:
                 return print_help('Unsupported option "%s"'%argv[0])
         else:
@@ -720,16 +724,19 @@ def main(argv):
         branch_lines = numpy.take(branch_lines, argsort[::-1])
 
         if maxzoom_level is None:
-            # Trim to 5 zoom-levels (1/1024 of max area)
-            min_area = area_arr.sum() / (4 ** 5)
+            # Trim to a zoom-level, 3 levels above the mean pixel size
+            min_area = numpy.nanmean(area_arr) * (4 ** 3)
         else:
             # Trim to the area at 'maxzoom_level'
             lvl = get_zoom_level(dem_band.get_spatial_ref(), 1)
             min_area = 4 ** (lvl - maxzoom_level - .5)  # The .5 is to match round() used by dst_layer_mgr.get_layer()
 
-        print('  Trimming total %d branches to min area of %.3f km2 (currently %.3f km2)'%(
-                branch_lines.size, min_area / 1e6, branch_lines['area'].min() / 1e6))
-        branch_lines = branch_lines[branch_lines['area'] >= min_area]
+        mask = branch_lines['area'] >= min_area
+        if numpy.count_nonzero(mask) > 0:
+            print('  Trimming total %d branches to %d, min area of %.3f km2 (currently %.3f km2)'%(
+                    branch_lines.size, numpy.count_nonzero(mask),
+                    min_area / 1e6, branch_lines['area'].min() / 1e6))
+            branch_lines = branch_lines[mask]
 
         duration = time.perf_counter() - start
         print('Created total %d branches, max/min area %.1f/%.3f km2, %d sec'%(
@@ -763,9 +770,10 @@ def main(argv):
 
         geometries = 0
         for branch in branch_lines:
-            ar = calc_branch_area(branch['x_y'], mgrid_n_xy, area_arr)
-            assert round(branch['area']) == round(ar), 'Accumulated branch coverage area mismatch %.6f / %.6f km2'%(
-                    branch['area'] / 1e6, ar / 1e6)
+            if EXTRA_ASSERTS:
+                ar = calc_branch_area(branch['x_y'], mgrid_n_xy, area_arr)
+                assert round(branch['area']) == round(ar), 'Accumulated branch coverage area mismatch %.6f / %.6f km2'%(
+                        branch['area'] / 1e6, ar / 1e6)
             # Select the layer, where to add the geometry, create if missing
             dst_layer = layer_mgr.get_layer(branch)
             if dst_layer is None:
@@ -800,6 +808,7 @@ def main(argv):
             geom.create()
             geometries += 1
 
+        dst_ds.flush_cache()
         duration = time.perf_counter() - start
         print('Created total %d geometries, %d sec'%(geometries, duration))
 
@@ -813,7 +822,7 @@ def print_help(err_msg=None):
     print('\t-h\t- This screen')
     print('\t-valley\t- Generate valleys, instead of ridges')
     print('\t-boundary_val <ele> - Treat the neighbors next to <ele> as boundary')
-    print('\t-multi_layer <maxzoom> - Create multiple layers upto a zoom-level (check OGR driver capabilities)')
+    print('\t-multi_layer <maxzoom> - Create multiple layers upto a zoom-level, 0 to auto-select (check OGR driver capabilities)')
     return 0 if err_msg is None else 255
 
 if __name__ == '__main__':
