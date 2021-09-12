@@ -147,16 +147,15 @@ jobs:
 
         python -m osgeo_utils.samples.gdalinfo ${{ env.SRC_DEM }}
 
-    - name: Generate ridges
-      run: python ridges.py ${{ env.TOOL_OPTIONS }} ${{ env.SRC_DEM }} ${{ env.DST_NAME }}
+    - name: Run PyTest
+      env:
+        PYTHONPATH: "."
+      run: pytest --capture=tee-sys --ignore=GDAL~
 
     - uses: actions/upload-artifact@v3
+      if: always() && env.DST_NAME
       with:
         name: ${{ env.DST_NAME }}
         path: |
           ${{ env.DST_NAME }}
           ${{ env.SRC_DEM_DIR }}/*.npy
-
-    - name: Validate result
-      if: env.REF_NAME
-      run: git diff --no-index ${{ env.DST_NAME }} ${{ env.REF_NAME }}
