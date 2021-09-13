@@ -8,16 +8,9 @@ import gdal_utils
 #   0 1 2
 #   3<4>5
 #   6 7 8
-VALID_NEIGHBOR_DIRS = (0, 1, 2, 3, 5, 6, 7, 8)
-NEIGHBOR_SELF = 4
-NEIGHBOR_LAST_VALID = 8
-NEIGHBOR_PENDING = 9
-NEIGHBOR_SEED = 10
-NEIGHBOR_STOP = 11
-NEIGHBOR_INVALID = 12
-NEIGHBOR_BOUNDARY = 13
-NEIGHBOR_DIR_DTYPE = numpy.int8
-VALID_NEIGHBOR_DIRS = numpy.array(VALID_NEIGHBOR_DIRS, dtype=NEIGHBOR_DIR_DTYPE)
+VALID_NEIGHBOR_DIRS = numpy.array(
+    (0, 1, 2, 3, 5, 6, 7, 8),
+    dtype=numpy.int8)
 
 # Keep the seed away from the edges
 SEED_INFLATE = 1
@@ -83,24 +76,6 @@ def neighbor_xy(x_y, neighbor_dir):
         return (x_y.T + (neighbor_dir % 3 - 1, neighbor_dir // 3 - 1)).T
     return x_y + numpy.stack((neighbor_dir % 3 - 1, neighbor_dir // 3 - 1), -1)
 
-def neighbor_flip(neighbor_dir):
-    """Get the inverted neighbor direction"""
-    return NEIGHBOR_LAST_VALID - neighbor_dir
-
-def neighbor_xy_safe(x_y, neighbor_dir):
-    """Get the coordinates of a neighbor pixel, handle invalid directions"""
-    res_xy = neighbor_xy(x_y, neighbor_dir)
-    # Threat NEIGHBOR_PENDING and NEIGHBOR_INVALID as NEIGHBOR_SELF,
-    # to ensure the raster coordinates are valid
-    mask = neighbor_dir > NEIGHBOR_LAST_VALID
-    if mask.any():
-        res_xy[mask] = x_y[mask]
-    return res_xy
-
-def neighbor_is_invalid(neighbor_dir):
-    """Return mask of where the neighbor directions are invalid"""
-    return neighbor_dir > NEIGHBOR_LAST_VALID
-
 #
 # First stage - trace ridges
 #
@@ -127,60 +102,52 @@ def select_seed(elevations, valleys, mask):
     seed_xy = numpy.unravel_index(flat_idx, elevations.shape)
     return numpy.array(seed_xy, dtype=numpy.int32)
 
-def process_neighbors(dem_band, dir_arr, x_y):
+def process_neighbors(dem_band, mgrid_n_xy, pending_mask, boundary_mask, x_y):
     """Process the valid and pending neighbor points and return a list to be put to tentative"""
+    gdal_utils.write_arr(pending_mask, x_y, False)
     x_y = x_y[...,numpy.newaxis,:]
     n_xy = neighbor_xy(x_y, VALID_NEIGHBOR_DIRS)
-    n_dir = numpy.broadcast_to(VALID_NEIGHBOR_DIRS, n_xy.shape[:-1])
     # Filter out of bounds pixels
     mask = dem_band.in_bounds(n_xy)
     if not mask.all():
         n_xy = n_xy[mask]
-        n_dir = n_dir[mask]
     # The lines can only pass-thru inner DEM pixels, the boundary ones do split
     stop_mask = ~mask.all(-1)
     # Filter already processed pixels
-    neighs = gdal_utils.read_arr(dir_arr, n_xy)
-    mask = neighs == NEIGHBOR_PENDING
+    mask = gdal_utils.read_arr(pending_mask, n_xy)
     if not mask.any():
         return None
+    gdal_utils.write_arr(pending_mask, n_xy, False)
     if not mask.all():
+        m = gdal_utils.read_arr(boundary_mask, n_xy)
         n_xy = n_xy[mask]
-        n_dir = n_dir[mask]
-        mask = neighs == NEIGHBOR_BOUNDARY
-        if mask.any():
-            stop_mask |= mask.any(-1)
-    # Process selected pixels
-    n_dir = neighbor_flip(n_dir)
-    # Put 'stop' markers on the successors of the masked points
+        if m.any():
+            stop_mask |= m.any(-1)
+    # Skip neighbor update for the successors of the 'stop_mask' points
     # This is to split lines at the boundary pixels
-    if stop_mask.any():
-        n_dir[stop_mask] = NEIGHBOR_STOP
-    gdal_utils.write_arr(dir_arr, n_xy, n_dir)
+    gdal_utils.write_arr(mgrid_n_xy, n_xy[~stop_mask], x_y)
     return n_xy
 
 def trace_ridges(dem_band, valleys=False, boundary_val=None):
     """Generate terrain ridges or valleys"""
-    # Start at the max/min altitude (first one, away from edges)
+    # Select 'pending' and 'boundary' masks
     elevations = dem_band.get_elevation(True)
-    select_mask = numpy.isnan(elevations)
+    boundary_mask = numpy.zeros_like(elevations, dtype=bool)
     if boundary_val is not None:
-        select_mask |= elevations == boundary_val
-    seed_xy = select_seed(elevations, valleys, select_mask)
+        boundary_mask = elevations == boundary_val
+    pending_mask = numpy.isfinite(elevations) & ~boundary_mask
+    # Start at the max/min altitude (first one, away from edges)
+    seed_xy = select_seed(elevations, valleys, ~pending_mask)
     print('Tracing', 'valleys' if valleys else 'ridges',
           'from seed point', seed_xy,
           ', altitude', dem_band.get_elevation(seed_xy))
 
     #
-    # Neighbor directions
-    # Initialize the points to be processed with 'pending' value.
+    # Neighbor mgrid pointers
+    # Initially each mgrid point, points to itself
     #
-    dir_arr = numpy.full(elevations.shape, NEIGHBOR_PENDING, dtype=NEIGHBOR_DIR_DTYPE)
-    # Here "select_mask" includes both boundary and "NoDataValue" points
-    dir_arr[select_mask] = NEIGHBOR_BOUNDARY
-    dir_arr[numpy.isnan(elevations)] = NEIGHBOR_INVALID
-    gdal_utils.write_arr(dir_arr, seed_xy, NEIGHBOR_SEED)
-    del elevations, select_mask
+    mgrid_n_xy = get_mgrid(elevations.shape)
+    del elevations
 
     #
     # Tentative point list (coord and altitude)
@@ -193,7 +160,7 @@ def trace_ridges(dem_band, valleys=False, boundary_val=None):
         x_y, _ = tentative[-1]
         tentative = tentative[:-1]
         #print('    Processing point %s alt %d, dist %d'%(x_y, _, gdal_utils.read_arr(dir_arr['dist'], x_y)))
-        n_xy = process_neighbors(dem_band, dir_arr, x_y)
+        n_xy = process_neighbors(dem_band, mgrid_n_xy, pending_mask, boundary_mask, x_y)
         if n_xy is not None:
             alts = dem_band.get_elevation(n_xy)
             assert not numpy.isnan(alts).any(), '"NoDataValue" point(s) %s are marked for processing'%n_xy[numpy.isnan(alts)]
@@ -213,13 +180,11 @@ def trace_ridges(dem_band, valleys=False, boundary_val=None):
         # After the 'tentative' is exhausted, there still can be islands of valid elevations,
         # that were not processed, because of the surrounding invalid ones
         elif not tentative.size:
-            mask = dir_arr == NEIGHBOR_PENDING
-            if mask.any():
+            if pending_mask.any():
                 # Restart at the highest/lowest unprocessed point
-                seed_xy = select_seed(dem_band.get_elevation(True), valleys, numpy.logical_not(mask))
+                seed_xy = select_seed(dem_band.get_elevation(True), valleys, ~pending_mask)
                 alt = dem_band.get_elevation(seed_xy)
                 print('Restart tracing from seed point', seed_xy, ', altitude', alt)
-                gdal_utils.write_arr(dir_arr, seed_xy, NEIGHBOR_SEED)
                 tentative = numpy.array([(seed_xy, alt)], dtype=tentative.dtype)
 
         #
@@ -229,10 +194,10 @@ def trace_ridges(dem_band, valleys=False, boundary_val=None):
             alts = tentative['alt']
             print('  Process step %d, tentatives %d, alt max/min %d/%d, remaining %d points'%(progress_idx,
                     tentative.shape[0], alts.max(), alts.min(),
-                    numpy.count_nonzero(dir_arr == NEIGHBOR_PENDING)))
+                    numpy.count_nonzero(pending_mask)))
         progress_idx += 1
 
-    return dir_arr
+    return mgrid_n_xy
 
 #
 # Branch identification for the second and third stages
@@ -643,17 +608,16 @@ def main(argv):
         start = time.perf_counter()
 
         # Actual trace
-        dir_arr = trace_ridges(dem_band, valleys, boundary_val)
-        if dir_arr is None:
+        mgrid_n_xy = trace_ridges(dem_band, valleys, boundary_val)
+        if mgrid_n_xy is None:
             print('Error: Failed to trace ridges', file=sys.stderr)
             return 2
 
         duration = time.perf_counter() - start
-        print('Traced through %d/%d points, %d sec'%(numpy.count_nonzero(~neighbor_is_invalid(dir_arr)), dir_arr.size, duration))
-
-        # Convert 'dir_arr' to 'mgrid_n_xy' array, where each element points to its neighbor
-        mgrid_n_xy = neighbor_xy_safe(get_mgrid(dir_arr.shape), dir_arr)
-        del dir_arr
+        ch_mask = (get_mgrid(dem_band.shape) != mgrid_n_xy).any(-1)
+        print('Traced through %d/%d points, %d sec'%(
+                numpy.count_nonzero(ch_mask), mgrid_n_xy[...,0].size, duration))
+        del ch_mask
 
         if KEEP_SNAPSHOT:
             keep_arrays(src_filename + '-1-', {'mgrid_n_xy': mgrid_n_xy,})
