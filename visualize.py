@@ -118,7 +118,7 @@ class collections:
                     break
         self.ax.figure.canvas.draw_idle()
 
-def do_redraw(colls, dem_band, dir_arr):
+def do_redraw(colls, dem_band, dir_arr, mgrid_n_xy):
     """Generate matplotlib collections"""
     # Convert all points in the DEM buffer to 2D array of lon-lat-alt values (3D array)
     shape = dem_band.shape
@@ -126,10 +126,10 @@ def do_redraw(colls, dem_band, dir_arr):
     lonlatalt = dem_band.xy2lonlatalt(mgrid_xy)
     if IDX_COORDS:
         lonlatalt[...,:2] = mgrid_xy
+    nodata_mask = numpy.isnan(lonlatalt[...,2])
 
     def nodata_markers(colls):
         # When DEM contains no-data altitudes (NaN), plot_surface() may not render anything
-        nodata_mask = numpy.isnan(lonlatalt[...,2])
         if nodata_mask.any():
             lonlatalt[...,2][nodata_mask] = NODATA_ALT
 
@@ -147,7 +147,7 @@ def do_redraw(colls, dem_band, dir_arr):
                 scatter(*nodata_pts.T, **NODATA_FMT))
     nodata_markers(colls)
 
-    if dir_arr is None:
+    if dir_arr is None and mgrid_n_xy is None:
         return
 
     #
@@ -156,22 +156,30 @@ def do_redraw(colls, dem_band, dir_arr):
     pts = lonlatalt
     if USE_2D:
         pts = pts[...,:2]
-    # Mask where n_dir-s are valid
-    valid_mask = ~ridges.neighbor_is_invalid(dir_arr)
+    # Mask where n_dir-s are valid or mgrid_n_xy are NOT self-pointers
+    if dir_arr is not None:
+        valid_mask = ~ridges.neighbor_is_invalid(dir_arr)
+    elif mgrid_n_xy is not None:
+        valid_mask = (mgrid_n_xy != mgrid_xy).any(-1)
 
     def markers_by_value(colls):
-        # Markers at "pending"
-        mask = dir_arr == ridges.NEIGHBOR_PENDING
-        print('Located %d "pending" pixels'%(numpy.count_nonzero(mask)))
-        colls.replace('pendings', colls.ax.
-                scatter(*pts[mask].T, **PENDINGS_FMT))
+        # Detailed markers in case of dir_arr, or combined in case of mgrid_n_xy
+        if dir_arr is not None:
+            # Markers at "pending"
+            mask = dir_arr == ridges.NEIGHBOR_PENDING
+            print('Located %d "pending" pixels'%(numpy.count_nonzero(mask)))
+            colls.replace('pendings', colls.ax.
+                    scatter(*pts[mask].T, **PENDINGS_FMT))
 
-        # Markers at "seed" and "stop"
-        mask = dir_arr == ridges.NEIGHBOR_SEED
-        print('Located %d "seed" pixels'%(numpy.count_nonzero(mask)))
-        colls.replace('seeds', colls.ax.
-                scatter(*pts[mask].T, **SEEDS_FMT))
-        mask = dir_arr == ridges.NEIGHBOR_STOP
+            # Markers at "seed" and "stop"
+            mask = dir_arr == ridges.NEIGHBOR_SEED
+            print('Located %d "seed" pixels'%(numpy.count_nonzero(mask)))
+            colls.replace('seeds', colls.ax.
+                    scatter(*pts[mask].T, **SEEDS_FMT))
+
+            mask = dir_arr == ridges.NEIGHBOR_STOP
+        elif mgrid_n_xy is not None:
+            mask = ~(nodata_mask | valid_mask)
         print('Located %d "stop" pixels'%(numpy.count_nonzero(mask)))
         colls.replace('stops', colls.ax.
                 scatter(*pts[mask].T, **STOPS_FMT))
@@ -180,8 +188,9 @@ def do_redraw(colls, dem_band, dir_arr):
     #
     # Graph node analysys
     #
-    # Helper array (sort of vector field)
-    mgrid_n_xy = ridges.neighbor_xy_safe(mgrid_xy, dir_arr)
+    # Generate mgrid_n_xy array if missing
+    if mgrid_n_xy is None:
+        mgrid_n_xy = ridges.neighbor_xy_safe(mgrid_xy, dir_arr)
 
     # Count the number of neighbors pointing to each pixel
     n_num = numpy.ones(dem_band.shape, dtype=int)
@@ -445,7 +454,7 @@ def do_redraw(colls, dem_band, dir_arr):
                 quiver(*pts[show_mask].T, *vecs[show_mask].T, colors, **fmt))
     n_dir_markers(colls)
 
-def show_plot(dem_band, dir_arr, title=None):
+def show_plot(dem_band, dir_arr, mgrid_n_xy, title=None):
     """Display matplotlib window"""
     fig = pyplot.figure()
     ax = fig.add_axes(deflate_rect([0, 0, 1 - AX_BTN_WIDTH, 1], 2 * AX_MARGIN, AX_MARGIN),
@@ -468,7 +477,7 @@ def show_plot(dem_band, dir_arr, title=None):
             lonlatalt[...,:2] = mgrid_xy
         set_aspect(ax, lonlatalt)
 
-    colls = collections(ax, do_redraw, dem_band, dir_arr)
+    colls = collections(ax, do_redraw, dem_band, dir_arr, mgrid_n_xy)
     colls.redraw()
 
     # Check boxes to show/hide individual elements
@@ -490,7 +499,7 @@ def show_plot(dem_band, dir_arr, title=None):
 def main(argv):
     """Main entry"""
     dem_filename = None
-    dir_arr = None
+    dir_arr = mgrid_n_xy = None
     while argv:
         if argv[0][0] == '-':
             if argv[0] == '-h':
@@ -498,6 +507,9 @@ def main(argv):
             elif argv[0] == '--dir_arr':
                 argv = argv[1:]
                 dir_arr = argv[0]
+            elif argv[0] == '--mgrid_n':
+                argv = argv[1:]
+                mgrid_n_xy = argv[0]
             else:
                 return print_help('Unsupported option "%s"'%argv[0])
         else:
@@ -523,12 +535,18 @@ def main(argv):
         if (dir_arr.shape != dem_band.shape):
             return print_help('DEM and "dir_arr" shape mismatch"%s"'%dem_filename)
 
+    # Load 'mgrid_n_xy'
+    if mgrid_n_xy is not None:
+        mgrid_n_xy = numpy.load(mgrid_n_xy)
+        if (mgrid_n_xy.shape != dem_band.shape + (2,)):
+            return print_help('DEM and "mgrid_n_xy" shape mismatch"%s"'%dem_filename)
+
     numpy.set_printoptions(suppress=True, precision=6)
     print('%s %d x %d:'%(dem_filename, *dem_band.dem_buf.shape))
     print(dem_band.xform)
 
     # Visualize terrain/ridges
-    res = show_plot(dem_band, dir_arr, dem_filename)
+    res = show_plot(dem_band, dir_arr, mgrid_n_xy, dem_filename)
     return res
 
 def print_help(err_msg=None):
@@ -538,6 +556,7 @@ def print_help(err_msg=None):
     print('\tOptions:')
     print('\t-h\t- This screen')
     print('\t--dir_arr <dir_arr-npy>\t- "dir_arr" (n_dir) npy file')
+    print('\t--mgrid_n <mgrid_n-npy>\t- "mgrid_n_xy" npy file')
     return 0 if err_msg is None else 255
 
 if __name__ == '__main__':
