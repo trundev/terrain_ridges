@@ -59,6 +59,26 @@ def set_aspect(ax, lonlatalt):
     ax.set_ylim(middle[1] - lonlan_max, middle[1] + lonlan_max)
     ax.set_zlim(middle[2] - alt_max, middle[2] + alt_max)
 
+def accumulate_by_mgrid(src_arr, mgrid_n_xy, gap=2):
+    """Accumulate array values into their next points in graph, esp. for graph-nodes"""
+    res_arr = numpy.zeros_like(src_arr)
+    # To avoid '+=' overlapping, the accumulation is performed only on elements
+    # separated by a gap of 2 elements (3x3 iterations).
+    # To allow wrapped-around grids, the last 2 elements are processed separatelly.
+    # Total 25 (5x5) iterations (when 'gap' is 2)
+    slices = [slice(i, -gap, gap+1) for i in range(gap+1)] + list(range(-gap, 0))
+    for x_sl in slices:
+        for y_sl in slices:
+            n_xy = mgrid_n_xy[x_sl, y_sl]
+            #TODO: [Optimization] Use inplace addition operator, like:
+            #   res_arr[tuple(numpy.moveaxis(n_xy, -1, 0))] += src_arr[x_sl, y_sl]
+            sum = gdal_utils.read_arr(res_arr, n_xy) + src_arr[x_sl, y_sl]
+            gdal_utils.write_arr(res_arr, n_xy, sum)
+
+    assert abs(numpy.nansum(res_arr) - numpy.nansum(src_arr)) * 1e6 < numpy.nanmax(src_arr), \
+            f'Total sum deviation {numpy.nansum(res_arr) - numpy.nansum(src_arr)}'
+    return res_arr
+
 class collections:
     """Maintain matplotlib collections"""
     colls = {}
@@ -101,7 +121,7 @@ class collections:
 def do_redraw(colls, dem_band, dir_arr):
     """Generate matplotlib collections"""
     # Convert all points in the DEM buffer to 2D array of lon-lat-alt values (3D array)
-    shape = dem_band.get_elevation(True).shape
+    shape = dem_band.shape
     mgrid_xy = numpy.moveaxis(numpy.mgrid[:shape[0],:shape[1]], 0, -1)
     lonlatalt = dem_band.xy2lonlatalt(mgrid_xy)
     if IDX_COORDS:
@@ -136,6 +156,8 @@ def do_redraw(colls, dem_band, dir_arr):
     pts = lonlatalt
     if USE_2D:
         pts = pts[...,:2]
+    # Mask where n_dir-s are valid
+    valid_mask = ~ridges.neighbor_is_invalid(dir_arr)
 
     def markers_by_value(colls):
         # Markers at "pending"
@@ -162,16 +184,13 @@ def do_redraw(colls, dem_band, dir_arr):
     mgrid_n_xy = ridges.neighbor_xy_safe(mgrid_xy, dir_arr)
 
     # Count the number of neighbors pointing to each pixel
-    n_num = numpy.zeros(dir_arr.shape, dtype=int)
-    for d in ridges.VALID_NEIGHBOR_DIRS:
-        n_xy = mgrid_n_xy[dir_arr == d]
-        n = numpy.zeros_like(n_num)
-        gdal_utils.write_arr(n, n_xy, 1)
-        n_num += n
+    n_num = numpy.ones(dem_band.shape, dtype=int)
+    n_num[~valid_mask] = 0
+    n_num = accumulate_by_mgrid(n_num, mgrid_n_xy)
     # Put -1 at invalid nodes, except the "real" seeds (distinguish from the "leafs")
-    n_num[ridges.neighbor_is_invalid(dir_arr) & (n_num == 0)] = -1
+    n_num[~valid_mask & (n_num == 0)] = -1
     print('Located %d "real-seed" pixels'%(numpy.count_nonzero(
-            ridges.neighbor_is_invalid(dir_arr) & (n_num > 0))))
+            ~valid_mask & (n_num > 0))))
 
     def node_markers(colls):
         # Markers at "leafs" (pixels w/o neighbor)
@@ -183,7 +202,7 @@ def do_redraw(colls, dem_band, dir_arr):
         # Add points where more than 2 neighbors pointing
         mask = n_num > 1
         print('Located %d "node" pixels (%d at "seed"), max %d forks'%(
-                numpy.count_nonzero(mask), numpy.count_nonzero(mask & ridges.neighbor_is_invalid(dir_arr)),
+                numpy.count_nonzero(mask), numpy.count_nonzero(mask & ~valid_mask),
                 n_num.max()))
         colls.replace('nodes', colls.ax.
                 scatter(*pts[mask].T, s=n_num[mask]**2, **NODES_FMT))
@@ -192,7 +211,7 @@ def do_redraw(colls, dem_band, dir_arr):
     # Extract graph node bridges (edges)
     def get_bridge_lines(dist_arr):
         # Extract "leafs", "nodes" and "real-seeds"
-        seed_mask = (n_num > 0) & ridges.neighbor_is_invalid(dir_arr)
+        seed_mask = (n_num > 0) & ~valid_mask
         mask = (n_num == 0) | (n_num > 1) | seed_mask
         print('Located %d "node-bridges"'%(numpy.count_nonzero(mask)))
         x_y = mgrid_xy[mask]
@@ -208,7 +227,7 @@ def do_redraw(colls, dem_band, dir_arr):
         bridge_lines['num'] = 0
         # Map x_y to the 'next' bridge indices, reserved values:
         # -1 -- bridge, -2 -- bare-seed or invalid
-        bridge_grid = numpy.full(dir_arr.shape, -2, bridge_lines['next'].dtype)
+        bridge_grid = numpy.full(dem_band.shape, -2, bridge_lines['next'].dtype)
         bridge_grid[(n_num == 1) & ~seed_mask] = -1
         bridge_grid[mask] = numpy.mgrid[:numpy.count_nonzero(mask)]
         print('Creating %d bridges from %d intermediate points, %d real-seed, %d bare-seed + invalid'%(
@@ -261,22 +280,19 @@ def do_redraw(colls, dem_band, dir_arr):
     bridge_lines = get_bridge_lines(dist_arr)
 
     # Isolate graph branches by iteratively trim the leaf graph-bridges until all pixels are processed
-    def rank_branches(dir_arr):
+    def rank_branches(mgrid_n_xy):
         """Assign a branch-rank to each pixel"""
-        rank_arr = numpy.zeros(dir_arr.shape, dtype=int)
+        rank_arr = numpy.zeros(mgrid_n_xy.shape[:-1], dtype=int)
         forks_arr = rank_arr.copy()
-        rank_arr[ridges.neighbor_is_invalid(dir_arr)] = -1
+        rank_arr[~valid_mask] = -1
         cur_rank = 0
         unassigned_cnt = numpy.count_nonzero(rank_arr == 0)
         while unassigned_cnt > 0:
             cur_rank += 1
             # Count the number of neighbors pointing to each pixel (within this rank)
-            n_num = numpy.zeros(dir_arr.shape, dtype=int)
-            for d in ridges.VALID_NEIGHBOR_DIRS:
-                n_xy = mgrid_n_xy[(dir_arr == d) & (rank_arr == 0)]
-                n = numpy.zeros_like(n_num)
-                gdal_utils.write_arr(n, n_xy, 1)
-                n_num += n
+            n_num = numpy.zeros(mgrid_n_xy.shape[:-1], dtype=int)
+            n_num[rank_arr == 0] = 1
+            n_num = accumulate_by_mgrid(n_num, mgrid_n_xy)
             # Put -1 at invalid nodes, except the "real" seeds (to distinguish from the "leaves")
             n_num[(rank_arr != 0) & (n_num == 0)] = -1
 
@@ -285,7 +301,7 @@ def do_redraw(colls, dem_band, dir_arr):
             print('Rank %d: Detected %d leaf branches...'%(cur_rank, x_y.shape[0]))
             gdal_utils.write_arr(forks_arr, x_y, cur_rank)
             # Mask of all bridge intermediate pixels
-            bridge_mask = (n_num == 1) & ~ridges.neighbor_is_invalid(dir_arr)
+            bridge_mask = (n_num == 1) & valid_mask
             while x_y.size:
                 gdal_utils.write_arr(rank_arr, x_y, cur_rank)
                 x_y = gdal_utils.read_arr(mgrid_n_xy, x_y)
@@ -296,7 +312,7 @@ def do_redraw(colls, dem_band, dir_arr):
             unassigned_cnt = numpy.count_nonzero(rank_arr == 0)
             print('  Assigned %d pixels'%(start_cnt - unassigned_cnt))
         return rank_arr, forks_arr
-    rank_arr, forks_arr = rank_branches(dir_arr)
+    rank_arr, forks_arr = rank_branches(mgrid_n_xy)
 
     # Markers at "forks" (pixels where branches start)
     fork_pts = pts[forks_arr > SHOW_MIN_RANK]
@@ -307,7 +323,7 @@ def do_redraw(colls, dem_band, dir_arr):
     # Vectors along node-bridges
     #
     def bridge_markers(colls):
-        """Direct vectors between nodes from the dir_arr graph"""
+        """Direct vectors between nodes from the graph"""
         valid_mask = bridge_lines['next'] >= 0
         bridges = bridge_lines[valid_mask]
         colors = numpy.zeros(bridges.shape, dtype=int)
@@ -358,8 +374,8 @@ def do_redraw(colls, dem_band, dir_arr):
     #
     def n_dir_markers(colls):
         # Select how to color dir-vectors
-        show_mask = ~ridges.neighbor_is_invalid(dir_arr)
-        colors = numpy.zeros(dir_arr.shape, dtype=int)
+        show_mask = valid_mask.copy()
+        colors = numpy.zeros(dem_band.shape, dtype=int)
         cidx = 0
         if colls.dir_style == 0:
             # Colors based on the bridge-rank
@@ -367,9 +383,9 @@ def do_redraw(colls, dem_band, dir_arr):
             # Hide low-rank pixels
             show_mask[rank_arr < SHOW_MIN_RANK] = False
         elif colls.dir_style == 1:
-            # Colors expand staring at "seed" and "stop"
+            # Colors expand staring at "real-seed"-s
             show_mask[...] = False
-            mask = (dir_arr == ridges.NEIGHBOR_SEED) | (dir_arr == ridges.NEIGHBOR_STOP)
+            mask = ~valid_mask & (n_num > 0)
             mask = gdal_utils.read_arr(mask, mgrid_n_xy) ^ mask
             while mask.any():
                 colors[mask] = cidx % DIR_ARR_CMAP_IDXS
@@ -384,7 +400,7 @@ def do_redraw(colls, dem_band, dir_arr):
                 # Hide leaf bridges
                 x_y = numpy.array(numpy.nonzero(n_num == 0)).T
                 # Mask of all bridge intermediate pixels
-                bridge_mask = (n_num == 1) & ~ridges.neighbor_is_invalid(dir_arr)
+                bridge_mask = (n_num == 1) & valid_mask
                 while x_y.size:
                     gdal_utils.write_arr(show_mask, x_y, False)
                     x_y = gdal_utils.read_arr(mgrid_n_xy, x_y)
@@ -396,7 +412,7 @@ def do_redraw(colls, dem_band, dir_arr):
             dists = bridge_lines['dist']
             gdal_utils.write_arr(colors, x_y, dists)
             # Mask of all bridge intermediate pixels
-            bridge_mask = (n_num == 1) & ~ridges.neighbor_is_invalid(dir_arr)
+            bridge_mask = (n_num == 1) & valid_mask
             while x_y.size:
                 gdal_utils.write_arr(colors, x_y, dists)
                 x_y = gdal_utils.read_arr(mgrid_n_xy, x_y)
@@ -441,7 +457,7 @@ def show_plot(dem_band, dir_arr, title=None):
         ax.invert_yaxis()
 
     # Convert all points in the DEM buffer to 2D array of lon-lat-alt values (3D array)
-    shape = dem_band.get_elevation(True).shape
+    shape = dem_band.shape
     mgrid_xy = numpy.moveaxis(numpy.mgrid[:shape[0],:shape[1]], 0, -1)
 
     if USE_2D:
@@ -468,7 +484,7 @@ def show_plot(dem_band, dir_arr, title=None):
     check.on_clicked(colls.on_showhide)
 
     ax.legend()
-    pyplot.show()
+    pyplot.show(block=True)
     return 0
 
 def main(argv):
@@ -504,7 +520,7 @@ def main(argv):
     # Load 'dir_arr'
     if dir_arr is not None:
         dir_arr = numpy.load(dir_arr)
-        if (dir_arr.shape != dem_band.get_elevation(True).shape):
+        if (dir_arr.shape != dem_band.shape):
             return print_help('DEM and "dir_arr" shape mismatch"%s"'%dem_filename)
 
     numpy.set_printoptions(suppress=True, precision=6)
