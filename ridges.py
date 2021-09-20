@@ -43,6 +43,10 @@ SMOOTHEN_GEOMETRY = False
 # Run extra (slow) internal tests
 EXTRA_ASSERTS = False
 
+# Experimental wrap-around conic(spheric) flags:
+#   1 - top-wrap, 2 - bottom-wrap, 4 - cylindric wrap only
+WRAP_FLAGS = 2
+
 #
 # Internal data-types, mostly for keep/resume support
 #
@@ -75,6 +79,32 @@ def neighbor_xy(x_y, neighbor_dir):
     if neighbor_dir.ndim < 2:       # Performance optimization
         return (x_y.T + (neighbor_dir % 3 - 1, neighbor_dir // 3 - 1)).T
     return x_y + numpy.stack((neighbor_dir % 3 - 1, neighbor_dir // 3 - 1), -1)
+
+def wrap_around(conic_flags, x_y, shape, semi_circum, transverse=False):
+    """Perform conic(spheric), then cylindric wrap-around"""
+    # The cylinder is [0], the cone(sphere) axis is [1]
+    if transverse:
+        x_y = x_y[...,::-1]
+        shape = shape[::-1]
+
+    mask = numpy.where(conic_flags & 1, x_y[...,1] < 0, False)
+    if conic_flags & 2:
+        mask |= x_y[...,1] >= shape[1]
+    if mask.any():
+        # Wrap around cone top/bottom: -1 => 0, shape => shape-1
+        # Note: The modulo operator returns remainder complementary to the floor_divide,
+        # thus negative coordinates are added to "shape[1]"
+        x_y[mask,1] = (-x_y[mask,1] - 1) % shape[1]
+        # Shift the cylinder axis
+        x_y[mask,0] += semi_circum
+
+    # Wrap around the cylinder circumference
+    x_y[...,0] %= 2 * semi_circum
+
+    # Revert initial preparation
+    if transverse:
+        x_y = x_y[...,::-1]
+    return x_y
 
 #
 # First stage - trace ridges
@@ -110,6 +140,11 @@ def process_neighbors(dem_band, mgrid_n_xy, pending_mask, boundary_mask, x_y):
     # Filter out of bounds pixels
     mask = dem_band.in_bounds(n_xy)
     if not mask.all():
+        if WRAP_FLAGS:
+            # Check for wrap-around(s) and update mask
+            n_xy[~mask] = wrap_around(WRAP_FLAGS, n_xy[~mask], dem_band.shape, dem_band.shape[0]//2)
+            mask = dem_band.in_bounds(n_xy)
+        # Remove out of bounds pixels
         n_xy = n_xy[mask]
     # The lines can only pass-thru inner DEM pixels, the boundary ones do split
     stop_mask = ~mask.all(-1)
