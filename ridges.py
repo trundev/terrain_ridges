@@ -578,10 +578,30 @@ def smoothen_by_mgrid(lonlatalt, mgrid_n_xy):
     lla_sum += lonlatalt * n_num
     n_num += n_num
 
+    #
+    # Correct smoothing of the lines that crosses 180th meridian
+    #
+    # Adjustment for the neighbors with longitudinal difference of more than 180 degrees
+    lon_adj = lonlatalt[...,0] - gdal_utils.read_arr(lonlatalt[...,0], mgrid_n_xy)
+    lon_adj = numpy.select([lon_adj < -180, lon_adj > 180], [-360., 360.], default=0)
+    if lon_adj.any():
+        # Fix the coordinates with the neighbor's adjustment
+        lla_sum[...,0] -= accumulate_by_mgrid(lon_adj, mgrid_n_xy)
+        lla_sum[...,0] += lon_adj
+        lon_adj = True
+    else:
+        lon_adj = False
+
     # Keep 'leaf' and 'seed' points intact
     lla_sum[keep_mask] = lonlatalt[keep_mask]
     n_num[keep_mask] = 1
-    return lla_sum / n_num
+    lla_sum /= n_num
+
+    # Normalize the adjusted longitudes in +/-180 boundary
+    if lon_adj:
+        lla_sum[...,0] = (lla_sum[...,0] + 180) % 360 - 180
+
+    return lla_sum
 
 #
 # Main processing
