@@ -204,8 +204,10 @@ def trace_ridges(dem_band, valleys=False, boundary_val=None):
 #
 def get_mgrid(shape):
     """Create a grid of self-pointing coordinates"""
-    mgrid = numpy.mgrid[:shape[0], :shape[1]]
+    mgrid = numpy.indices(shape)
     # The coordinates must be in the last dimension
+    if mgrid.ndim <= 2:
+        return mgrid.T  # Performance optimization
     return numpy.moveaxis(mgrid, 0, -1)
 
 def calc_pixel_area(distance, shape):
@@ -226,35 +228,33 @@ def calc_pixel_area(distance, shape):
                        * distance.get_distance(mgrid_xy[mask], mgrid_xy_y[mask], True)
     return area_arr
 
-def accumulate_by_mgrid(src_arr, mgrid_n_xy):
+def accumulate_by_mgrid(src_arr, mgrid_n_xy, mask=Ellipsis):
     """Accumulate array values into their next points in graph, esp. for graph-nodes"""
     res_arr = numpy.zeros_like(src_arr)
+    src_arr = src_arr[mask]
     # To avoid '+=' overlapping, the accumulation is performed by using unbuffered in place
     # operation, see "numpy.ufunc.at".
-    indices = numpy.moveaxis(mgrid_n_xy, -1, 0)
+    indices = mgrid_n_xy[mask]
+    indices = numpy.moveaxis(indices, -1, 0) if indices.ndim > 2 else indices.T # Performance optimization
     numpy.add.at(res_arr, tuple(indices), src_arr)
 
-    assert abs(numpy.nansum(res_arr) - numpy.nansum(src_arr)) * 1e6 <= numpy.nanmax(src_arr), \
-            f'Total sum deviation {numpy.nansum(res_arr) - numpy.nansum(src_arr)}'
+    if EXTRA_ASSERTS:
+        assert abs(numpy.nansum(res_arr) - numpy.nansum(src_arr)) * 1e6 <= numpy.nanmax(src_arr), \
+                f'Total sum deviation {numpy.nansum(res_arr) - numpy.nansum(src_arr)}'
     return res_arr
 
-def get_branch_mask(x_y, mgrid_n_xy):
-    """Obtains total coverage mask of single branch"""
-    # Obtain mask(s) of the root point(s)
-    res_mask = numpy.zeros(mgrid_n_xy.shape[:-1], dtype=bool)
-    gdal_utils.write_arr(res_mask, x_y, True)
-    mask = gdal_utils.read_arr(res_mask, mgrid_n_xy)
-    # The AND-NOT is needed to drop the self-pointing graph-seeds
-    mask &= ~res_mask
-    while mask.any():
-        res_mask |= mask
-        mask = gdal_utils.read_arr(mask, mgrid_n_xy)
-    return res_mask
+def accumulate_pixel_coverage(area_arr, mgrid_n_xy):
+    """Accumulate branch coverage area for each pixel"""
+    area_arr = area_arr.copy()
+    # Helper 'valid_mask' array where mgrid_n_xy are NOT self-pointers
+    valid_mask = (mgrid_n_xy != get_mgrid(mgrid_n_xy.shape[:-1])).any(-1)
 
-def calc_branch_area(x_y, mgrid_n_xy, area_arr):
-    """Accumulate total coverage area of branch"""
-    mask = get_branch_mask(x_y, mgrid_n_xy)
-    return area_arr[mask].sum(-1)
+    src_arr = numpy.where(valid_mask, area_arr, 0)
+    while src_arr.any():
+        src_arr = accumulate_by_mgrid(src_arr, mgrid_n_xy, src_arr != 0)
+        area_arr += src_arr
+        src_arr[~valid_mask] = 0.
+    return area_arr
 
 def arrange_lines(mgrid_n_xy, area_arr, trunks_only):
     """Arrange lines in branches by using the area of coverage"""
@@ -722,6 +722,10 @@ def main(argv):
     if dst_ds:
         start = time.perf_counter()
 
+        # Branch coverage area of each pixel (branch['area'] assert only)
+        acc_area_arr = accumulate_pixel_coverage(area_arr, mgrid_n_xy)
+        del area_arr
+
         layer_mgr = dst_layer_mgr(dst_ds, dem_band.get_spatial_ref(), valleys, multi_layer)
         # Delete existing layers
         if truncate:
@@ -734,10 +738,9 @@ def main(argv):
 
         geometries = 0
         for branch in branch_lines:
-            if EXTRA_ASSERTS:
-                ar = calc_branch_area(branch['x_y'], mgrid_n_xy, area_arr)
-                assert round(branch['area']) == round(ar), 'Accumulated branch coverage area mismatch %.6f / %.6f km2'%(
-                        branch['area'] / 1e6, ar / 1e6)
+            ar = gdal_utils.read_arr(acc_area_arr, branch['x_y'])
+            assert round(branch['area']) == round(ar), 'Accumulated branch coverage area mismatch %.6f / %.6f km2'%(
+                    branch['area'] / 1e6, ar / 1e6)
             # Select the layer, where to add the geometry, create if missing
             dst_layer = layer_mgr.get_layer(branch)
             if dst_layer is None:
