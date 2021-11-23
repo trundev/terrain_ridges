@@ -33,7 +33,7 @@ env:
   DEF_GDALWARP_OPTIONS: ""  # Complete HGT-file (1201x1201)
   # GIS SDK release package from https://www.gisinternals.com/sdk.php
   GIS_SDK_URL: "https://download.gisinternals.com/sdk/downloads/release-1928-x64-dev.zip"
-  GDAL_SRC_REF: "v3.3.2"
+  GDAL_SRC_REF: "v3.4.0"
 
 jobs:
   generate:
