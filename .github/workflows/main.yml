@@ -32,8 +32,8 @@ env:
   DEF_DST_EXT: ".kml"
   DEF_GDALWARP_OPTIONS: ""  # Complete HGT-file (1201x1201)
   # GIS SDK release package from https://www.gisinternals.com/sdk.php
-  GIS_SDK_URL: "https://download.gisinternals.com/sdk/downloads/release-1928-x64-dev.zip"
-  GDAL_SRC_REF: "v3.4.0"
+  GIS_SDK_URL: "https://download.gisinternals.com/sdk/downloads/release-1930-x64-dev.zip"
+  GDAL_SRC_REF: "v3.5.0"
 
 jobs:
   generate:
@@ -55,12 +55,12 @@ jobs:
         echo "DST_EXT=${{ env.DEF_DST_EXT }}" >> ${env:GITHUB_ENV}
         echo "GDALWARP_OPTIONS=${{ env.DEF_GDALWARP_OPTIONS }}" >> ${env:GITHUB_ENV}
 
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v3
 
-    - name: Set up Python 3.9
-      uses: actions/setup-python@v2
+    - name: Set up Python 3.10
+      uses: actions/setup-python@v3
       with:
-        python-version: 3.9
+        python-version: '3.10'
 
     - name: Get pip cache dir
       id: pip-cache-dir
@@ -69,16 +69,17 @@ jobs:
 
     - name: Pip cache
       id: pip-cache
-      uses: actions/cache@v2
+      uses: actions/cache@v3
       with:
         path: |
           ${{ steps.pip-cache-dir.outputs.dir }}
           GDAL
+          GDAL_SDK
         key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}-${{ env.GIS_SDK_URL }}
 
     - name: Clone GDAL sources
       if: steps.pip-cache.outputs.cache-hit != 'true'
-      uses: actions/checkout@v2
+      uses: actions/checkout@v3
       with:
         repository: osgeo/gdal
         ref: ${{ env.GDAL_SRC_REF }}
@@ -92,14 +93,14 @@ jobs:
         echo "Downloading from $SRC_URI..."
         Invoke-WebRequest -H @{Accept='application/octet-stream'} $SRC_URI -o $SRC_ZIP
         if ($proc.ExitCode) {exit $proc.ExitCode}
-        Expand-Archive $SRC_ZIP -DestinationPath GDAL
+        Expand-Archive $SRC_ZIP -DestinationPath GDAL_SDK
 
     - name: Prepare for GDAL installation
       run: |
         $GDAL_BASE=Get-Item("GDAL")
-        $SDK_BASE=Get-Item $(Join-Path $GDAL_BASE "release-*")
+        $SDK_BASE=Get-Item $(Join-Path "GDAL_SDK" "release-*")
 
-        $INCLUDE="$GDAL_BASE/gdal/gcore;$GDAL_BASE/gdal/gnm;$SDK_BASE/include"
+        $INCLUDE="$GDAL_BASE/gcore;$GDAL_BASE/gnm;$SDK_BASE/include"
         echo "INCLUDE=$INCLUDE" >> ${env:GITHUB_ENV}
         echo "INCLUDE set to $INCLUDE"
 
@@ -208,7 +209,7 @@ jobs:
     - name: Generate ridges
       run: python ridges.py ${{ env.TOOL_OPTIONS }} ${{ env.SRC_DEM }} ${{ env.DST_NAME }}
 
-    - uses: actions/upload-artifact@v2
+    - uses: actions/upload-artifact@v3
       with:
         name: ${{ env.DST_NAME }}
         path: |

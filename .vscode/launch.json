@@ -9,15 +9,15 @@
             "console": "internalConsole",
             "env": {
                 // Use a GIS SDK release from https://gisinternals.com/sdk.php
-                "Path": "${workspaceRoot}/../gdal-release/release-1928-x64-dev/release-1928-x64/bin;${env:Path}",
-                "GDAL_DRIVER_PATH": "${workspaceRoot}/../gdal-release/release-1928-x64-dev/release-1928-x64/bin/gdal/plugins",
-                "PROJ_LIB": "${workspaceRoot}/../gdal-release/release-1928-x64-dev/release-1928-x64/bin/proj7/share",
+                "Path": "${workspaceRoot}/../gdal-release/release-1930-x64-dev/release-1930-x64/bin;${env:Path}",
+                "GDAL_DRIVER_PATH": "${workspaceRoot}/../gdal-release/release-1930-x64-dev/release-1930-x64/bin/gdal/plugins",
+                "PROJ_LIB": "${workspaceRoot}/../gdal-release/release-1930-x64-dev/release-1930-x64/bin/proj7/share",
             },
             "args": [
             ],
             "internalConsoleOptions": "openOnSessionStart",
             "stopOnEntry": false,
-            "justMyCode": true,
+            //"justMyCode": false,
         }
     ]
 }
