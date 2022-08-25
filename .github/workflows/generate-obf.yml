@@ -1,0 +1,133 @@
+name: OsmAnd OBF generator
+
+on:
+  workflow_dispatch:
+    inputs:
+      SRC_URL:
+        description: "URL(s) to download source OGR"
+        required: true
+        default: ""
+      UNPACK_SRC:
+        description: "The source OGR is inside an archive (zipped)"
+        required: false
+        default: false
+        type: boolean
+      OSMAND_CREATOR_URL:
+        description: "URL to download OsmAndMapCreator"
+        required: false
+        default: "https://download.osmand.net/latest-night-build/OsmAndMapCreator-main.zip"
+
+env:
+  SRC_URL: "${{ github.event.inputs.SRC_URL }}"
+  UNPACK_SRC: ${{ github.event.inputs.UNPACK_SRC }}
+  OSMAND_CREATOR_URL: "${{ github.event.inputs.OSMAND_CREATOR_URL }}"
+  MERGE_SRC_POSTFIX: "-merge"
+  DST_EXT: ".obf"
+
+jobs:
+  generate:
+    runs-on: windows-latest
+
+    env:
+      SRC_OGR_DIR: "OGR"
+      OGR_EXTENSIONS: '".kml",".kmz",".geojson",".gml",".csv",".shp"'
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Python 3.11
+      id: setup-python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Set up GDAL
+      uses: trundev/setup-gdal@main
+      id: setup-gdal
+      with:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Install dependencies
+      working-directory: tools/obf_generator
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Set up JAVA
+      uses: actions/setup-java@v3
+      with:
+        distribution: 'adopt'
+        java-version: '16'
+
+    - name: Install OsmAnd Creator
+      working-directory: tools/obf_generator
+      run: |
+        $url="${{ env.OSMAND_CREATOR_URL }}"
+        echo "Downloading OsmAndMapCreator from $url..."
+        $uri = [uri]"$url"
+        $zip = $uri.Segments[-1]
+        Invoke-WebRequest -H @{Accept='application/octet-stream,application/x-zip-compressed'} $uri -o $zip
+        if ($proc.ExitCode) {exit $proc.ExitCode}
+        echo "Unzipping $zip..."
+        Expand-Archive $zip -DestinationPath OsmAndMapCreator
+
+    - name: Download source OGRs
+      working-directory: tools/obf_generator
+      run: |
+        $SRC_OGR=@()
+        ForEach ($url in "${{ env.SRC_URL }}".Split(",").Trim()) {
+          echo "Downloading OGR from $url..."
+          # Authorization allows download of github release/assets action/artifacts
+          #FIXME: Artifact download fails with 'application/octet-stream'
+          $data = Invoke-WebRequest -H @{Accept='application/octet-stream'; Authorization='Bearer ${{ secrets.GITHUB_TOKEN }}'} $url
+          if ($proc.ExitCode) {exit $proc.ExitCode}
+
+          $fname = $data.Headers['Content-Disposition'].Split(';').Trim()
+          $fname = $fname.Where({$_ -like 'filename=*'}).Split('=')[1]
+          Set-Content $fname $data.Content -AsByteStream
+          $SRC_OGR += Get-Item $fname
+        }
+        $SRC_OGR = $SRC_OGR -join ","
+        echo "SRC_OGR=$SRC_OGR" >> ${env:GITHUB_ENV}
+        echo "SRC_OGR set to $SRC_OGR"
+
+    - name: Unpack ${{ env.SRC_OGR }}
+      if: env.UNPACK_SRC == 'true'
+      working-directory: tools/obf_generator
+      run: |
+        ForEach ($zip in "${{ env.SRC_OGR }}".Split(",")) {
+          echo "Unzipping $zip..."
+          Expand-Archive $zip -DestinationPath ${{ env.SRC_OGR_DIR }}
+          if ($proc.ExitCode) {exit $proc.ExitCode}
+        }
+        $SRC_OGR = @(Get-ChildItem ${{ env.SRC_OGR_DIR }})
+        # Select just the OGR-files, if multiple files were extracted
+        if ($SRC_OGR.Length -gt 1) {
+          $SRC_OGR = @($SRC_OGR | Where-Object {$_.Extension -in ${{ env.OGR_EXTENSIONS }} })
+        }
+        $SRC_OGR = $SRC_OGR -join ","
+        echo "SRC_OGR=$SRC_OGR" >> ${env:GITHUB_ENV}
+        echo "SRC_OGR set to $SRC_OGR"
+
+    - name: Select DST_NAME
+      run: |
+        $SRC_OGR = Get-Item "${{ env.SRC_OGR }}".Split(",")
+        $DST_NAME = [System.IO.Path]::ChangeExtension($SRC_OGR[0].Name, "${{ env.DST_EXT }}")
+        echo "DST_NAME=$DST_NAME" >> ${env:GITHUB_ENV}
+        echo "DST_NAME set to $DST_NAME"
+
+    - name: Generate OBF
+      working-directory: tools/obf_generator
+      run: |
+        ForEach ($ogr in "${{ env.SRC_OGR }}".Split(",")) {
+          echo "Processing OGR file $ogr..."
+          .\make_obf.bat $ogr
+          if ($LASTEXITCODE) {exit $LASTEXITCODE}
+        }
+
+    - uses: actions/upload-artifact@v3
+      with:
+        name: ${{ env.DST_NAME }}
+        path: |
+          tools/obf_generator/*${{ env.DST_EXT }}
+          tools/obf_generator/${{ env.SRC_OGR_DIR }}/*${{ env.DST_EXT }}
