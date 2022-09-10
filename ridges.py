@@ -210,6 +210,20 @@ def get_mgrid(shape):
         return mgrid.T  # Performance optimization
     return numpy.moveaxis(mgrid, 0, -1)
 
+def flatten_mgrid(mgrid_n_xy, mask=None):
+    """Convert mgrid xy coordinates to 1D indices, optionally apply a mask"""
+    if mask is None:
+        mask = numpy.broadcast_to(True, mgrid_n_xy.shape[:-1])
+    # Flattened indices template (the last dimension collapses to a single index)
+    res_grid = numpy.full_like(mgrid_n_xy, -1, shape=mgrid_n_xy.shape[:-1])
+    flat_idxs = numpy.mgrid[:numpy.count_nonzero(mask)]
+    res_grid[mask] = flat_idxs
+    # Flatten the result, make the out-of-mask indices self-pointing
+    res_grid = gdal_utils.read_arr(res_grid, mgrid_n_xy[mask])
+    res_grid = numpy.where(res_grid < 0, flat_idxs, res_grid)
+    # Add extra dimension to match mgrid_n_xy format
+    return res_grid[:,numpy.newaxis]
+
 def calc_pixel_area(distance, shape):
     # Use a helper array, where each element points to it-self
     mgrid_xy = get_mgrid(shape)
