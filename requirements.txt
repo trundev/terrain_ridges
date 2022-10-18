@@ -1,6 +1,3 @@
-# Notes:
-# * GDAL==3.5.0 is currently supported by "release-1930-x64-dev",
-#   check https://gisinternals.com/sdk.php
-GDAL==3.5.0
+GDAL
 numpy
 pyproj

@@ -7,6 +7,7 @@ set WORKFLOW_INPUTS=\"SRC_URL\": \"https://dds.cr.usgs.gov/srtm/version2_1/SRTM3
 set WORKFLOW_INPUTS=%WORKFLOW_INPUTS%, \"DST_EXT\": \".kmz\"
 set WORKFLOW_INPUTS=%WORKFLOW_INPUTS%, \"TOOL_OPTIONS\": \"\"
 set WORKFLOW_INPUTS=%WORKFLOW_INPUTS%, \"GDALWARP_OPTIONS\": \"-ts 600 600\"
+set WORKFLOW_INPUTS=%WORKFLOW_INPUTS%, \"REBUILD_CACHE\": \"false\"
 
 set OPT=
 set OPT=-H "Accept: application/vnd.github.v3+json" %OPT%
