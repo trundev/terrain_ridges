@@ -38,7 +38,12 @@ env:
 
 jobs:
   generate:
-    runs-on: windows-latest
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+      fail-fast: false
+
+    runs-on: ${{ matrix.os }}
 
     env:
       SRC_DEM_DIR: "DEM"
