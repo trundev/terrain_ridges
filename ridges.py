@@ -258,121 +258,79 @@ def accumulate_pixel_coverage(area_arr, mgrid_n_xy):
 
 def arrange_lines(mgrid_n_xy, area_arr, trunks_only):
     """Arrange lines in branches by using the area of coverage"""
-    area_arr = area_arr.copy()
+    # Keep caller's mgrid
+    mgrid_n_xy = mgrid_n_xy.copy()
+    # Helper self-pointing array
+    mgrid_xy = get_mgrid(mgrid_n_xy.shape[:-1])
+    # Will need the initial "seed" pixels to identify trunks
+    seed_mask = (mgrid_n_xy == mgrid_xy).all(-1)
+    # Accumulate coverage area of each point
+    area_arr = accumulate_pixel_coverage(area_arr, mgrid_n_xy)
 
-    # Helper 'valid_mask' array where mgrid_n_xy are NOT self-pointers
-    valid_mask = (mgrid_n_xy != get_mgrid(mgrid_n_xy.shape[:-1])).any(-1)
+    #
+    # Extract separate branch-lines: graph where each node has single neighbor
+    #
+    # At each pixel, place the greatest area from all neighbors pointing it
+    # (if integer, replace '-numpy.inf' with "numpy.iinfo(area_arr.dtype).min")
+    max_area = numpy.full_like(area_arr, -numpy.inf)
+    indices = tuple(numpy.moveaxis(mgrid_n_xy, -1, 0))
+    # Ignore the areas of the self-pointing "seed" pixels
+    cut_area = numpy.where(~seed_mask, area_arr, -numpy.inf)
+    numpy.maximum.at(max_area, indices, cut_area)
+    del cut_area
+    # Take the greatest area back into neighbors (greatest value among siblings)
+    # Then compare to the original one, to get the points with less coverage-area
+    max_area = max_area[indices]
+    mask = area_arr < max_area
+    # Cut branches are selected points, by making them self-pointing
+    mgrid_n_xy[mask] = mgrid_xy[mask]
 
     # Count the number of neighbors pointing to each pixel
-    # Only the last branch that reaches a pixel continues forward, others stop there.
-    # As the branches are processed starting from the one with less coverage-area, this
-    # allows the largest one to reach the graph-seed.
-    n_num = numpy.ones_like(area_arr, dtype=int)
-    n_num[~valid_mask] = 0
+    n_num = numpy.ones(shape=mgrid_n_xy.shape[:-1], dtype=int)
+    n_num[(mgrid_n_xy == mgrid_xy).all(-1)] = 0
     n_num = accumulate_by_mgrid(n_num, mgrid_n_xy)
-    # Put -1 at invalid nodes, except the "real" seeds (distinguish from the "leafs")
-    n_num[~valid_mask & (n_num == 0)] = -1
-    all_leafs = n_num == 0
+
+    # Create forks:
+    # Cut all branches, if more than one neighbors have greatest coverage-area
+    mask = n_num > 1
+    if mask.any():
+        mask = gdal_utils.read_arr(mask, mgrid_n_xy)
+        mgrid_n_xy[mask] = mgrid_xy[mask]
+
+    # Re-count the number of neighbors: must be one
+    n_num = numpy.ones(shape=mgrid_n_xy.shape[:-1], dtype=int)
+    n_num[(mgrid_n_xy == mgrid_xy).all(-1)] = 0
+    n_num = accumulate_by_mgrid(n_num, mgrid_n_xy)
+    assert n_num.max() <= 1, 'Unprocessed pixels at %s'%numpy.array(numpy.nonzero(n_num > 1)).T
+
+    # Helper 'valid_mask' array where mgrid_n_xy are NOT self-pointers
+    valid_mask = (mgrid_n_xy != mgrid_xy).any(-1)
+    # Identify "leafs", but drop the "leaf-seeds" singletons
+    all_leafs = (n_num == 0) & valid_mask
     print('Detected %d "leaf" and %d "real-seed" pixels'%(
             numpy.count_nonzero(all_leafs),
-            numpy.count_nonzero(~valid_mask & (n_num > 0))))
+            numpy.count_nonzero(seed_mask & (n_num > 0))))
 
-    # Start at the "leaf" pixels
-    pend_lines = numpy.zeros(numpy.count_nonzero(all_leafs), dtype=BRANCH_LINE_DTYPE)
-    pend_lines['start_xy'] = pend_lines['x_y'] = numpy.array(numpy.nonzero(all_leafs)).T
-    pend_lines['area'] = gdal_utils.read_arr(area_arr, pend_lines['x_y'])
+    # Trace branches startinf at the "leaf" pixels
+    branch_lines = numpy.zeros(numpy.count_nonzero(all_leafs), dtype=BRANCH_LINE_DTYPE)
+    branch_lines['start_xy'] = numpy.array(numpy.nonzero(all_leafs)).T
 
-    #
-    # Process the leaf-branches in parallel
-    # The parallel processing must stop at the point before the graph-nodes
-    #
-    bridge_mask = gdal_utils.read_arr(n_num == 1, mgrid_n_xy)
-    bridge_mask &= valid_mask
-    all_leafs[...] = False
-    pend_mask = numpy.ones(pend_lines.size, dtype=bool)
-    x_y = pend_lines['x_y']
+    x_y = branch_lines['start_xy'].copy()
+    pend_mask = numpy.ones(branch_lines.size, dtype=bool)
     while pend_mask.any():
-        gdal_utils.write_arr(all_leafs, x_y, True)
-        # Stop in front the graph nodes and at the "seeds"
-        mask = gdal_utils.read_arr(bridge_mask, x_y)
-        x_y = x_y[mask]
-        # Advance the points, which are still at graph-bridges
-        x_y = gdal_utils.read_arr(mgrid_n_xy, x_y)
-        assert (gdal_utils.read_arr(n_num, x_y) == 1).all()
-        gdal_utils.write_arr(n_num, x_y, 0)
-        # Keep the intermediate results
-        pend_mask[pend_mask] = mask
-        pend_lines['x_y'][pend_mask] = x_y
-        # Accumulate coverage area
-        area = gdal_utils.read_arr(area_arr, x_y)
-        pend_lines['area'][pend_mask] += area
-    del bridge_mask
-    del pend_mask
-    assert int(pend_lines['area'].sum()) == int(area_arr[all_leafs].sum()), 'Leaf-branch coverage area mismatch %.6f / %.6f km2'%(
-            pend_lines['area'].sum() / 1e6, area_arr[all_leafs].sum() / 1e6)
-    # Trim leaf-trunks
-    mask = gdal_utils.read_arr(valid_mask, pend_lines['x_y'])
-    pend_lines = pend_lines[mask]
-    print('  Detected %d pixels in "leaf" branches, area %.2f km2, trim %d leaf-trunks'%(
-            numpy.count_nonzero(all_leafs), pend_lines['area'].sum() / 1e6,
-            numpy.count_nonzero(~mask)))
+        # Stop at "seed" points
+        pend_mask[pend_mask] = gdal_utils.read_arr(valid_mask, x_y[pend_mask])
+        # Advance the points, which are still in the middle of a branch
+        x_y[pend_mask] = gdal_utils.read_arr(mgrid_n_xy, x_y[pend_mask])
+    branch_lines['x_y'] = x_y
 
-    #
-    # Process the rest of branches one by one, by advancing the smallest one
-    # Keep the list sorted in ascending coverage-area order
-    #
-    argsort = numpy.argsort(pend_lines['area'])
-    pend_lines = numpy.take(pend_lines, argsort)
+    if trunks_only:
+        # Leave only branched ending at a "seed" from initial mgrid
+        mask = gdal_utils.read_arr(seed_mask, branch_lines['x_y'])
+        branch_lines = branch_lines[mask]
 
-    branch_lines = numpy.empty_like(pend_lines, shape=[0])
-    trim_cnt = 0
-    progress_idx = 0
-    while pend_lines.size:
-        # Process the branch with minimal coverage-area
-        branch = pend_lines[0]
-        pend_lines = pend_lines[1:]
-        x_y = branch['x_y']
-        if gdal_utils.read_arr(valid_mask, x_y):
-            # Advance to the next point
-            x_y = gdal_utils.read_arr(mgrid_n_xy, x_y)
-            # Accumulate the coverage-area
-            area = branch['area'] + gdal_utils.read_arr(area_arr, x_y)
-
-            # Handle node-bridges counter: only the last branch to proceed further
-            n = gdal_utils.read_arr(n_num, x_y)
-            if n == 1:
-                branch['x_y'] = x_y
-                branch['area'] = area
-                pend_lines = sorted_arr_insert(pend_lines, branch, 'area')
-                keep_branch = False
-            else:
-                gdal_utils.write_arr(n_num, x_y, n - 1)
-                gdal_utils.write_arr(area_arr, x_y, area)
-                keep_branch = not trunks_only
-        else:
-            # Stop at graph-seed (trunk branch)
-            keep_branch = True
-
-        # Discard the "leaf" branches, with "trunks_only" -- non-trunk branches
-        if keep_branch:
-            if False == gdal_utils.read_arr(all_leafs, branch['x_y']):
-                branch_lines = numpy.append(branch_lines, branch)
-            else:
-                trim_cnt += 1
-
-        #
-        # Progress, each 10000-th step
-        #
-        if progress_idx % 10000 == 0:
-            area = branch_lines['area'].max() if branch_lines.size else 0
-            if pend_lines.size:
-                area = max(area, pend_lines['area'].max())
-            print('  Process step %d, max. area %.2f km2, completed %d, pending %d, trimmed leaves %d'%(progress_idx,
-                    area / 1e6, branch_lines.size, pend_lines.size, trim_cnt))
-        progress_idx += 1
-
-    # Confirm everything is processed
-    assert (n_num <= 1).all(), 'Unprocessed pixels at %s'%numpy.array(numpy.nonzero(n_num > 0)).T
+    # Update branch area
+    branch_lines['area'] = gdal_utils.read_arr(area_arr, branch_lines['x_y'])
     return branch_lines
 
 def flip_lines(mgrid_n_xy, x_y):
