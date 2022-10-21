@@ -246,14 +246,14 @@ def accumulate_by_mgrid(src_arr, mgrid_n_xy, mask=Ellipsis):
 def accumulate_pixel_coverage(area_arr, mgrid_n_xy):
     """Accumulate branch coverage area for each pixel"""
     area_arr = area_arr.copy()
-    # Helper 'valid_mask' array where mgrid_n_xy are NOT self-pointers
-    valid_mask = (mgrid_n_xy != get_mgrid(mgrid_n_xy.shape[:-1])).any(-1)
+    # Helper 'seed_mask' array where mgrid_n_xy are self-pointers
+    seed_mask = (mgrid_n_xy == get_mgrid(mgrid_n_xy.shape[:-1])).all(-1)
 
-    src_arr = numpy.where(valid_mask, area_arr, 0)
+    src_arr = numpy.where(seed_mask, 0, area_arr)
     while src_arr.any():
         src_arr = accumulate_by_mgrid(src_arr, mgrid_n_xy, src_arr != 0)
         area_arr += src_arr
-        src_arr[~valid_mask] = 0.
+        src_arr[seed_mask] = 0.
     return area_arr
 
 def arrange_lines(mgrid_n_xy, area_arr, trunks_only):
@@ -719,11 +719,15 @@ def main(argv):
                     'branch_lines': BRANCH_LINE_DTYPE,
                 })
 
+    #
+    # Generate geometry
+    #
     if dst_ds:
         start = time.perf_counter()
 
         # Branch coverage area of each pixel (branch['area'] assert only)
-        acc_area_arr = accumulate_pixel_coverage(area_arr, mgrid_n_xy)
+        if EXTRA_ASSERTS:
+            acc_area_arr = accumulate_pixel_coverage(area_arr, mgrid_n_xy)
         del area_arr
 
         layer_mgr = dst_layer_mgr(dst_ds, dem_band.get_spatial_ref(), valleys, multi_layer)
@@ -738,9 +742,10 @@ def main(argv):
 
         geometries = 0
         for branch in branch_lines:
-            ar = gdal_utils.read_arr(acc_area_arr, branch['x_y'])
-            assert round(branch['area']) == round(ar), 'Accumulated branch coverage area mismatch %.6f / %.6f km2'%(
-                    branch['area'] / 1e6, ar / 1e6)
+            if EXTRA_ASSERTS:
+                ar = gdal_utils.read_arr(acc_area_arr, branch['x_y'])
+                assert round(branch['area']) == round(ar), 'Accumulated branch coverage area mismatch %.6f / %.6f km2'%(
+                        branch['area'] / 1e6, ar / 1e6)
             # Select the layer, where to add the geometry, create if missing
             dst_layer = layer_mgr.get_layer(branch)
             if dst_layer is None:
