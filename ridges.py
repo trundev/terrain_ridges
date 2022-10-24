@@ -236,7 +236,7 @@ def accumulate_by_mgrid(src_arr, mgrid_n_xy, mask=Ellipsis):
     numpy.add.at(res_arr, tuple(indices), src_arr)
 
     if ASSERT_LEVEL >= 3:
-        assert abs(numpy.nansum(res_arr) - numpy.nansum(src_arr)) * 1e6 <= numpy.nanmax(src_arr), \
+        assert numpy.isclose(numpy.nansum(res_arr), numpy.nansum(src_arr)), \
                 f'Total sum deviation {numpy.nansum(res_arr) - numpy.nansum(src_arr)}'
     return res_arr
 
@@ -245,12 +245,32 @@ def accumulate_pixel_coverage(area_arr, mgrid_n_xy):
     area_arr = area_arr.copy()
     # Helper 'seed_mask' array where mgrid_n_xy are self-pointers
     seed_mask = (mgrid_n_xy == get_mgrid(mgrid_n_xy.shape[:-1])).all(-1)
+    total_area = numpy.nansum(area_arr)
+    print('Accumulating the coverage area: total %.2f km2, %d points, %d seeds'%(
+            total_area / 1e6, area_arr.size, numpy.count_nonzero(seed_mask)))
 
     src_arr = numpy.where(seed_mask, 0, area_arr)
+    progress_idx = 1
     while src_arr.any():
         src_arr = accumulate_by_mgrid(src_arr, mgrid_n_xy, src_arr != 0)
         area_arr += src_arr
         src_arr[seed_mask] = 0.
+
+        #
+        # Progress, each 1000-th step
+        #
+        if progress_idx % 1000 == 0:
+            print('  Process step %d, max area %.2f km2, remaining %d points'%(
+                    progress_idx, area_arr.max() / 1e6, numpy.count_nonzero(src_arr != 0)))
+        progress_idx += 1
+
+    print('  Accumulated area at seeds: max/mean %.2f/%.2f km2'%(
+            area_arr.max() / 1e6, area_arr[seed_mask].mean() / 1e6))
+    if ASSERT_LEVEL >= 2:
+        assert area_arr.max() == area_arr[seed_mask].max(), 'Max area is not at a seed-point'
+        assert numpy.isclose(total_area, numpy.nansum(area_arr[seed_mask])), \
+                'Total area does not match the sum of seeds %.6f / %.6f km2'%(
+                    total_area / 1e6, numpy.nansum(area_arr[seed_mask]) / 1e6)
     return area_arr
 
 def arrange_lines(mgrid_n_xy, area_arr, trunks_only):
@@ -654,7 +674,7 @@ def main(args):
         for branch in branch_lines:
             if ASSERT_LEVEL >= 3:
                 ar = gdal_utils.read_arr(acc_area_arr, branch['x_y'])
-                assert round(branch['area']) == round(ar), 'Accumulated branch coverage area mismatch %.6f / %.6f km2'%(
+                assert numpy.isclose(branch['area'], ar), 'Accumulated branch coverage area mismatch %.6f / %.6f km2'%(
                         branch['area'] / 1e6, ar / 1e6)
             # Select the layer, where to add the geometry, create if missing
             dst_layer, is_new = layer_mgr.get_layer(branch)
