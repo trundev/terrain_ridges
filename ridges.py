@@ -281,6 +281,10 @@ def arrange_lines(mgrid_n_xy, area_arr, trunks_only):
     mgrid_xy = get_mgrid(mgrid_n_xy.shape[:-1])
     # Will need the initial "seed" pixels to identify trunks
     seed_mask = (mgrid_n_xy == mgrid_xy).all(-1)
+    # Will need the initial "node" pixels to identify leaf-branches
+    n_num = numpy.where(seed_mask, 0, 1)
+    n_num = accumulate_by_mgrid(n_num, mgrid_n_xy)
+    nodes_mask = n_num > 1
     # Accumulate coverage area of each point
     area_arr = accumulate_pixel_coverage(area_arr, mgrid_n_xy)
 
@@ -332,13 +336,17 @@ def arrange_lines(mgrid_n_xy, area_arr, trunks_only):
     branch_lines['start_xy'] = numpy.argwhere(all_leafs)
 
     x_y = branch_lines['start_xy'].copy()
+    n_nodes = numpy.zeros_like(branch_lines, dtype=int)
     pend_mask = numpy.ones(branch_lines.size, dtype=bool)
     while pend_mask.any():
         # Stop at "seed" points
         pend_mask[pend_mask] = gdal_utils.read_arr(valid_mask, x_y[pend_mask])
         # Advance the points, which are still in the middle of a branch
         x_y[pend_mask] = gdal_utils.read_arr(mgrid_n_xy, x_y[pend_mask])
+        n_nodes[pend_mask] += gdal_utils.read_arr(nodes_mask, x_y[pend_mask])
     branch_lines['x_y'] = x_y
+    # Drop the "leaf" (single-line) branches
+    branch_lines = branch_lines[n_nodes > 0]
 
     if trunks_only:
         # Leave only branched ending at a "seed" from initial mgrid
