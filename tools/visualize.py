@@ -15,6 +15,11 @@ DEF_MAPBOX_STYLE = 'mapbox://styles/mapbox/outdoors-v12'
 MAPBOX_ACCESS_TOKEN = 'pk.eyJ1IjoidHJ1bmRldiIsImEiOiJja211ejdmdjMwMDVmMnZucWR0bXAydW5oIn0._cWi8O8hVesaH0m8ZEO1Cw'
 
 
+# Distance methods for --gradient
+DISTANCE_DRAFT = 'draft'
+DISTANCE_TM = 'tm'
+DISTANCE_GEOD = 'geod'
+
 #
 # From ridges.py
 # (here 'mgrid_n' is with coordinates at first dimension)
@@ -89,11 +94,11 @@ def add_scatter_mgrid_n(fig: go.Figure, lonlat_arr: np.array, mgrid_n_xy: np.arr
         lines_arr = lines_arr * len_scale + lonlat_arr * (1 - len_scale)
     return add_scatter_lines(fig, (lonlat_arr, lines_arr), text=text_arr, **scatter_kwargs)
 
-def get_gradient_mgrid(altitude: np.array) -> np.array:
+def get_gradient_mgrid(altitude: np.array, *, distance: gdal_utils.tm_distance or None) -> list[np.array, np.array]:
     """Generate gradient mgrid_n"""
     mgrid = np.indices(altitude.shape)
     grad_n = mgrid.copy()
-    altitude_n = altitude.copy()
+    slope_max = np.zeros_like(altitude)
     for sl_left, sl_right in [
             # along x
             [(slice(0, -1), ...), (slice(1, None), ...)],
@@ -108,10 +113,17 @@ def get_gradient_mgrid(altitude: np.array) -> np.array:
             [(slice(0, -1), slice(1, None)), (slice(1, None), slice(0, -1))],
             [(slice(1, None), slice(0, -1)), (slice(0, -1), slice(1, None))],
         ]:
-        mask = altitude_n[sl_left] < altitude[sl_right]
-        altitude_n[sl_left][mask] = altitude[sl_right][mask]
+        slope = altitude[sl_right] - altitude[sl_left]
+        # Use actual slope arctan(vert / hor)
+        if distance is not None:
+            # Distances between each point 'sl_left' and its neighbor at the 'sl_right' side
+            dist = distance.get_distance(mgrid[:, *sl_right].T, mgrid[:, *sl_left].T, flat=True).T
+            slope = np.arctan2(slope, dist)
+
+        mask = slope_max[sl_left] < slope
+        slope_max[sl_left][mask] = slope[mask]
         grad_n[:, *sl_left][:, mask] = mgrid[:, *sl_right][:, mask]
-    return grad_n
+    return grad_n, slope_max
 
 def plot_figure(fig: go.Figure, dem_band: gdal_utils.gdal_dem_band, mgrid_n_list: list) -> None:
     """Create figure plot"""
@@ -189,9 +201,24 @@ def main(args):
     dem_band.load()
 
     mgrid_n_list = []
+    # Generate gradient
     if args.gradient:
+        distance = gdal_utils.geod_distance(dem_band) if args.gradient == DISTANCE_GEOD \
+                else gdal_utils.tm_distance(dem_band) if args.gradient == DISTANCE_TM \
+                else gdal_utils.draft_distance(dem_band) if args.gradient == DISTANCE_DRAFT \
+                else None
         altitude = dem_band.get_elevation(True)
-        mgrid_n_list.append(('Gradient', get_gradient_mgrid(altitude)))
+        mgrid_n, slope = get_gradient_mgrid(altitude, distance=distance)
+        # Show slope / altitude difference
+        if distance is None:
+            format = '%d m'
+        else:
+            format = '%d deg'
+            slope = np.rad2deg(slope)
+        slope = np.vectorize(lambda v: format%v, otypes=[object])(slope)
+        mgrid_n_list.append(('Gradient', mgrid_n, slope))
+
+    # Load neighbor-grids
     if args.mgrid_n is not None:
         for fname in args.mgrid_n:
             print(f'Loading neighbor-grid: "{args.mgrid_n}"')
@@ -269,8 +296,9 @@ if __name__ == '__main__':
             f' If empty, append "{DEF_MGRID_N_POSTFIX}" to "dem_file"')
     parser.add_argument('--mapbox-style', default=DEF_MAPBOX_STYLE,
             help=f'Mapbox layout style, default: "{DEF_MAPBOX_STYLE}"')
-    parser.add_argument('--gradient', action='store_true',
-            help=f'Generate gradient mgrid-n')
+    parser.add_argument('--gradient', nargs='?',
+            choices=[DISTANCE_DRAFT, DISTANCE_TM, DISTANCE_GEOD], const=True,
+            help=f'Generate gradient mgrid-n, specify distance calculation method to use actual slope')
     args = parser.parse_args()
 
     # Apply '--mgrid-n' default
