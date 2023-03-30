@@ -54,6 +54,23 @@ def get_n_num_seeds(mgrid_n_xy, *, leaf_seed_val: int or None=-1):
         n_num[(n_num == 0) & seed_mask] = leaf_seed_val
     return n_num, seed_mask
 
+def flip_lines(mgrid_n_xy, x_y):
+    """Flip all graph-edges along multiple lines"""
+    n_xy = mgrid_n_xy[:, *x_y]
+    mgrid_n_xy[:, *x_y] = x_y
+    while True:
+        prev_n_xy = mgrid_n_xy[:, *n_xy]
+        mgrid_n_xy[:, *n_xy] = x_y
+        mask = (prev_n_xy != n_xy).any(0)
+        if not mask.all():
+            if not mask.any():
+                return mgrid_n_xy
+            n_xy = n_xy[:, mask]
+            prev_n_xy = prev_n_xy[:, mask]
+        x_y = n_xy
+        n_xy = prev_n_xy
+    return mgrid_n_xy
+
 #
 # Figure scatter helpers
 #
@@ -183,6 +200,91 @@ def isolate_borders(mgrid_n: np.array, seed_ids: np.array) -> np.array:
     res_mask = (seed_ids[(slice(1,-1),) * seed_ids.ndim] != neighbor_ids).any(0)
     res_mask = np.pad(res_mask, 1, constant_values=True)
     return res_mask
+
+def join_seed_islands(altitude: np.array, mgrid_n: np.array) -> np.array:
+    """Connect neighbor-grid islands along the highest adjacent leafs"""
+    # Special seed IDs
+    SEED_ID_NONE = -1       # Unreachable or invalid
+    SEED_ID_BOUND = -2      # Boundary (outside) points
+    seed_ids, leaf_mask, seed_mask = get_seed_ids(mgrid_n, none_id=SEED_ID_NONE, leaf_seed_id=SEED_ID_NONE)
+    # Use both leaves asn seeds as join ends
+    leaf_mask |= seed_mask
+
+    #
+    # Isolate leaf neighbor coordinates, altitude and seed IDs
+    #
+    leaf_xy = np.asarray(np.nonzero(leaf_mask))
+    neighbor_xy = leaf_xy[:, np.newaxis, :] + NEIGHBORS[..., np.newaxis]
+    # Isolate out-of-boundary points
+    bound_mask = (neighbor_xy < 0).any(0) | (neighbor_xy.T >= altitude.shape).T.any(0)
+
+    # Altitudes of all neighbors of each leaf, the boundary ones must be processed with priority
+    neighbor_alts = np.full_like(altitude, np.inf, shape=neighbor_xy.shape[1:])
+    neighbor_alts[~bound_mask] = altitude[tuple(neighbor_xy[:, ~bound_mask])]
+
+    # Seed IDs of all neighbors of each leaf, -2 for boundary (outsiders)
+    neighbor_ids = np.full_like(seed_ids, SEED_ID_BOUND, shape=neighbor_xy.shape[1:])
+    neighbor_ids[~bound_mask] = seed_ids[tuple(neighbor_xy[:, ~bound_mask])]
+
+    #
+    # Prepare leafs altitude and seed IDs
+    #
+    leaf_alts = altitude[leaf_mask]
+    leaf_ids = seed_ids[leaf_mask]
+    del leaf_mask, seed_ids, bound_mask
+
+    while True:
+        # Drop "internal" leaves (surrounded by the same seed ID or invalid)
+        mask = ((leaf_ids != neighbor_ids) & (neighbor_ids != SEED_ID_NONE)).any(0)
+        if not mask.any():
+            # All points are processed
+            break
+        leaf_ids = leaf_ids[mask]
+        leaf_alts = leaf_alts[mask]
+        leaf_xy = leaf_xy[:, mask]
+        neighbor_ids = neighbor_ids[:, mask]
+        neighbor_alts = neighbor_alts[:, mask]
+        neighbor_xy = neighbor_xy[..., mask]
+
+        # The neighbors of the same seed IDs must be ignored when processing
+        neighbor_alts[leaf_ids == neighbor_ids] = -np.inf
+
+        #
+        # Process arrays based on the lowest altitude between each leaf and its highest neighbor
+        # Note:
+        # This is almost always the same as leaf altutude
+        #
+        alt_minmax = np.min((np.nanmax(neighbor_alts, 0), leaf_alts), 0)
+
+        # Select the max-altitude leaf, neighbor pair. Merge islands
+        pair_idx = np.argmax(alt_minmax)
+        pair_idx = np.nanargmax(neighbor_alts[:, pair_idx]), pair_idx
+
+        l_xy = leaf_xy[:, pair_idx[1]]
+        l_id = leaf_ids[pair_idx[1]]
+        n_xy = neighbor_xy[:, *pair_idx]
+        n_id = neighbor_ids[pair_idx]
+        print(f'  Merging {l_xy} (island {l_id}) into {n_xy} (island {n_id}), altitude {alt_minmax[pair_idx[1]]}')
+        flip_lines(mgrid_n, l_xy[:, np.newaxis])
+        if (n_xy >= 0).all() and (n_xy < altitude.shape).all():
+            mgrid_n[:, *l_xy] = n_xy
+
+        # Replace IDs of merged island (this makes more leaves "internal")
+        if l_id == SEED_ID_BOUND:
+            # The "boundary" ID must persist, to prevent merge between boundary islands
+            l_id, n_id = n_id, l_id
+        neighbor_ids[neighbor_ids == l_id] = n_id
+        leaf_ids[leaf_ids == l_id] = n_id
+
+        # Drop the processed pair
+        leaf_ids = np.delete(leaf_ids, pair_idx[1])
+        leaf_alts = np.delete(leaf_alts, pair_idx[1])
+        leaf_xy = np.delete(leaf_xy, pair_idx[1], axis=-1)
+        neighbor_ids = np.delete(neighbor_ids, pair_idx[1], axis=-1)
+        neighbor_alts = np.delete(neighbor_alts, pair_idx[1], axis=-1)
+        neighbor_xy = np.delete(neighbor_xy, pair_idx[1], axis=-1)
+
+    return mgrid_n
 
 def plot_figure(fig: go.Figure, dem_band: gdal_utils.gdal_dem_band, mgrid_n_list: list) -> None:
     """Create figure plot"""
