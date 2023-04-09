@@ -20,6 +20,10 @@ DISTANCE_DRAFT = 'draft'
 DISTANCE_TM = 'tm'
 DISTANCE_GEOD = 'geod'
 
+# Discrete color for seed-island coverage
+import plotly.colors
+SEED_ID_COLORS = plotly.colors.sequential.Plotly3
+
 #
 # From ridges.py
 # (here 'mgrid_n' is with coordinates at first dimension)
@@ -125,6 +129,61 @@ def get_gradient_mgrid(altitude: np.array, *, distance: gdal_utils.tm_distance o
         grad_n[:, *sl_left][:, mask] = mgrid[:, *sl_right][:, mask]
     return grad_n, slope_max
 
+def get_seed_ids(mgrid_n: np.array, *, none_id: int,
+        leaf_seed_id: int or None=None, boundary_id: int or None=None,
+        base_id: int=0) -> list[np.array, np.array]:
+    """Assign IDs to each seed island, start from `base_id`, `none_id`/`leaf_seed_id` for no-seed(loop)/leaf-seeds"""
+    assert none_id < base_id, f'none_id {none_id} must be below base_id {base_id}'
+    n_num, seed_mask = get_n_num_seeds(mgrid_n, leaf_seed_val=leaf_seed_id)
+    pend_mask = ~seed_mask
+
+    # Points that can never reach a "seed" (loops) will have 'none_id'
+    seed_ids = np.full(n_num.shape, none_id)
+    # Separate leaf-seeds from real-seeds
+    if leaf_seed_id is not None:
+        assert leaf_seed_id < base_id, f'leaf_seed_id {leaf_seed_id} must be below base_id {base_id}'
+        # 'n_num' is 'leaf_seed_id' at self-pointing leafs
+        seed_ids[n_num == leaf_seed_id] = leaf_seed_id
+        seed_mask[n_num == leaf_seed_id] = False
+    # Identify boundary islands
+    if boundary_id is not None:
+        for i in range(seed_ids.ndim):
+            sl = np.s_[:,] * i
+            seed_ids[sl + np.s_[:1,]] = seed_ids[sl + np.s_[-1:,]] = boundary_id
+            seed_mask[sl + np.s_[:1,]] = seed_mask[sl + np.s_[-1:,]] = False
+
+    seed_ids[seed_mask] = np.arange(np.count_nonzero(seed_mask)) + base_id
+    # Expand the seed IDs till all non-seeds got ID
+    while pend_mask.any():
+        seed_ids[pend_mask] = seed_ids[tuple(mgrid_n[:, pend_mask])]
+        if (seed_ids[pend_mask] == none_id).all():
+            print(f'Warning: Detected {np.count_nonzero(pend_mask)} points in no-seed branches (loops)')
+            break
+        pend_mask[pend_mask] = pend_mask[tuple(mgrid_n[:, pend_mask])]
+
+    np.testing.assert_equal(seed_ids[seed_mask], np.arange(np.count_nonzero(seed_mask)) + base_id,
+            err_msg='Unexpected order of seed IDs')
+    return seed_ids, n_num == 0, seed_mask
+
+# Helper index arrays (2x9 and 2x8)
+NEIGHBORS = np.arange(3) - 1
+NEIGHBORS_SELF = np.stack(np.broadcast_arrays(NEIGHBORS, NEIGHBORS[:,np.newaxis])).reshape(2, -1)
+# Drop the "self" entry
+NEIGHBORS = NEIGHBORS_SELF[:,(NEIGHBORS_SELF != 0).any(0)]
+
+def isolate_borders(mgrid_n: np.array, seed_ids: np.array) -> np.array:
+    """Obtain mask of points where any of neighbors have different seed ID"""
+    data_shape = mgrid_n.shape[1:]
+    # Get neighbor coordinates / IDs of all internal point (skip boundary ones)
+    base_xy = np.indices(np.asarray(data_shape) - 2) + 1
+    neighbor_xy = (base_xy[:, np.newaxis, ...].T + NEIGHBORS.T).T
+    neighbor_ids = seed_ids[tuple(neighbor_xy)]
+
+    # Get mask for inner points, pad boundary ones with 'True'
+    res_mask = (seed_ids[(slice(1,-1),) * seed_ids.ndim] != neighbor_ids).any(0)
+    res_mask = np.pad(res_mask, 1, constant_values=True)
+    return res_mask
+
 def plot_figure(fig: go.Figure, dem_band: gdal_utils.gdal_dem_band, mgrid_n_list: list) -> None:
     """Create figure plot"""
     indices = np.moveaxis(np.indices(dem_band.shape), 0, -1)
@@ -149,22 +208,48 @@ def plot_figure(fig: go.Figure, dem_band: gdal_utils.gdal_dem_band, mgrid_n_list
                                    name=f'mgrid_n', legendgroup=idx, legendgrouptitle_text=name)
         res = *res, data
 
-        # Number of neighbors of each node-point
-        n_num, seed_mask = get_n_num_seeds(mgrid_n)
+        # Seed island identification
+        seed_ids, leaf_mask, seed_mask = get_seed_ids(mgrid_n, none_id=-1, leaf_seed_id=-2)
+        border_mask = isolate_borders(mgrid_n, seed_ids)
+        border_mask &= valid_mask   # Hide "NoData" altitudes
+        all_mask = border_mask | leaf_mask | seed_mask
+        # Text to include seed ID and its coordinates
+        seed_xy = np.nonzero(seed_mask)
+        def get_str(xy):
+            sid = seed_ids[tuple(xy)]
+            text = '[Leaf] ' if leaf_mask[tuple(xy)] else ''
+            text += f'[Seed, coverage {np.count_nonzero(sid == seed_ids)}] ' if seed_mask[tuple(xy)] else ''
+            text += f'Seed {sid}'
+            if sid >= 0:
+                text += f' at {seed_xy[0][sid]},{seed_xy[1][sid]}'
+            return np.asarray(text, dtype=object)
+        text_arr = np.apply_along_axis(get_str, 0, np.asarray(np.nonzero(all_mask)))
+        del seed_xy
+        # Colorize
+        color_arr = np.choose(seed_ids[border_mask], SEED_ID_COLORS, mode='wrap')
+        data = add_scatter_points(fig, lla_arr, border_mask,
+                                  mode='markers', text_arr=text_arr[border_mask[all_mask]],
+                                  marker=dict(symbol='circle', color=color_arr),
+                                  name=f'Seed-islands', legendgroup=idx)
+        res = *res, data
+
         # Leafs
-        print(f'  Leafs: {np.count_nonzero(n_num == 0)}')
-        data = add_scatter_points(fig, lla_arr, n_num == 0,
-                                  mode='markers', marker=dict(symbol='circle'),
+        print(f'  Leafs: {np.count_nonzero(leaf_mask)}')
+        data = add_scatter_points(fig, lla_arr, leaf_mask,
+                                  mode='markers', text_arr=text_arr[leaf_mask[all_mask]],
+                                  marker=dict(symbol='circle'),
                                   name=f'Leafs', legendgroup=idx)
         res = *res, data
         # Real-seeds (self-pointing, but not leafs)
-        print(f'  Seeds: {np.count_nonzero((n_num > 0) & seed_mask)}, self-pointing: {np.count_nonzero(seed_mask)}')
-        seed_mask &= n_num > 0
+        print(f'  Seeds: {np.count_nonzero(seed_mask)}, self-pointing: {np.count_nonzero(seed_mask | (seed_ids==-2))}')
         data = add_scatter_points(fig, lla_arr, seed_mask,
-                                  mode='markers', marker=dict(symbol='circle'),
+                                  mode='markers', text_arr=text_arr[seed_mask[all_mask]],
+                                  marker=dict(symbol='circle'),
                                   name=f'Seeds', legendgroup=idx)
         res = *res, data
+
         # Nodes
+        n_num, _ = get_n_num_seeds(mgrid_n)
         node_mask = n_num > 1
         n_num_masked = n_num[node_mask]
         print(f'  Nodes: {n_num_masked.size}, max: {n_num_masked.max()}')
@@ -177,16 +262,27 @@ def plot_figure(fig: go.Figure, dem_band: gdal_utils.gdal_dem_band, mgrid_n_list
         # Straight-lines between non-leaf nodes
         start_xy = np.nonzero(node_mask)
         next_xy = mgrid_n[:,*start_xy]
+        # Mean value (skip start/end points)
+        mean_lla = np.zeros_like(lla_arr[start_xy])
+        mean_cnt = np.zeros(mean_lla.shape[:1], dtype=int)
         # "Cut" the grid at nodes, where to stop traversing
         mgrid_tmp = mgrid_n.copy()
         mgrid_tmp[:,node_mask] = np.indices(node_mask.shape)[:,node_mask]
         while True:
             prev_xy = next_xy
-            next_xy = mgrid_tmp[:,*tuple(next_xy)]
+            next_xy = mgrid_tmp[:,*next_xy]
             # Check if there is any change
-            if (prev_xy == next_xy).all():
+            mask = (prev_xy != next_xy).any(0)
+            mean_lla[mask] += lla_arr[tuple(prev_xy[:,mask])]
+            mean_cnt[mask] += 1
+            if not mask.any():
                 break
-        data = add_scatter_lines(fig, (lla_arr[start_xy], lla_arr[tuple(next_xy)]),
+        # Make the middle points (mean value)
+        mask = mean_cnt == 0
+        mean_lla[mask] = lla_arr[start_xy][mask]
+        mean_cnt[mask] = 1
+        mean_lla /= mean_cnt[:,np.newaxis]
+        data = add_scatter_lines(fig, (lla_arr[start_xy], mean_lla, lla_arr[tuple(next_xy)]),
                                  mode='lines',
                                  name=f'Node-edges', legendgroup=idx)
         res = *res, data
