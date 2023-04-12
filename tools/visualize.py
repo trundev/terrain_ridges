@@ -188,6 +188,37 @@ NEIGHBORS_SELF = np.stack(np.broadcast_arrays(NEIGHBORS, NEIGHBORS[:,np.newaxis]
 # Drop the "self" entry
 NEIGHBORS = NEIGHBORS_SELF[:,(NEIGHBORS_SELF != 0).any(0)]
 
+def get_gradient_mgrid_new(altitude: np.array, *, distance: gdal_utils.tm_distance or None) -> list[np.array, np.array]:
+    """Generate gradient mgrid_n"""
+    grad_xy = np.indices(altitude.shape)
+    # Work on the "internal" points only
+    int_slice = np.s_[1:-1,] * altitude.ndim
+    base_xy = grad_xy[:, np.newaxis, *int_slice]
+    neighbor_xy = (base_xy.T + NEIGHBORS.T).T
+
+    slope = altitude[tuple(neighbor_xy)] - altitude[tuple(base_xy)]
+    # Use actual slope arctan(vert / hor)
+    if distance is not None:
+        # Distances between each point and all its neighbors
+        base_xy = np.broadcast_to(base_xy, shape=neighbor_xy.shape)
+        dist = distance.get_distance(neighbor_xy.T, base_xy.T, flat=True).T
+        slope = np.arctan2(slope, dist)
+
+    # Gradient at max positive slope (this also excludes NaN-s)
+    mask = (slope > 0).any(0)
+    argmax = np.nanargmax(slope[:, mask], axis=0, keepdims=True)
+    base_xy = np.take_along_axis(neighbor_xy[..., mask], argmax[np.newaxis, ...], axis=1)
+
+    # Extract selected slope
+    slope[0, mask] = np.take_along_axis(slope[:, mask], argmax, axis=0)
+    slope[0, ~mask] = 0
+    slope = np.pad(slope[0], 1, constant_values=0)
+
+    # Combine result from "internal" points
+    mask = np.pad(mask, 1, constant_values=False)
+    grad_xy[:, mask] = base_xy[:, 0, ...]
+    return grad_xy, slope
+
 def isolate_borders(mgrid_n: np.array, seed_ids: np.array) -> np.array:
     """Obtain mask of points where any of neighbors have different seed ID"""
     data_shape = mgrid_n.shape[1:]
@@ -201,7 +232,8 @@ def isolate_borders(mgrid_n: np.array, seed_ids: np.array) -> np.array:
     res_mask = np.pad(res_mask, 1, constant_values=True)
     return res_mask
 
-def join_seed_islands(altitude: np.array, mgrid_n: np.array) -> np.array:
+def join_seed_islands(altitude: np.array, mgrid_n: np.array, *,
+            iterations: int or True=True) -> np.array:
     """Connect neighbor-grid islands along the highest adjacent leafs"""
     # Special seed IDs
     SEED_ID_NONE = -1       # Unreachable or invalid
@@ -233,7 +265,7 @@ def join_seed_islands(altitude: np.array, mgrid_n: np.array) -> np.array:
     leaf_ids = seed_ids[leaf_mask]
     del leaf_mask, seed_ids, bound_mask
 
-    while True:
+    for _ in iter(bool, True) if iterations is True else range(iterations):
         # Drop "internal" leaves (surrounded by the same seed ID or invalid)
         mask = ((leaf_ids != neighbor_ids) & (neighbor_ids != SEED_ID_NONE)).any(0)
         if not mask.any():
@@ -286,6 +318,72 @@ def join_seed_islands(altitude: np.array, mgrid_n: np.array) -> np.array:
 
     return mgrid_n
 
+def join_seed_islands_new(altitude: np.array, mgrid_n: np.array, *,
+        iterations: int or True=True) -> np.array:
+    """Connect neighbor-grid islands along the highest adjacent leafs"""
+    # Special seed IDs
+    SEED_ID_NONE = -1       # Unreachable or invalid
+    SEED_ID_BOUND = -2      # Boundary (outside) points
+    seed_ids, _, _ = get_seed_ids(mgrid_n,
+            none_id=SEED_ID_NONE, leaf_seed_id=SEED_ID_NONE, boundary_id=SEED_ID_BOUND)
+
+    #
+    # Process first the "internal" islands only
+    #
+    # Start with all non-boundary points, isolate neighbors
+    base_xy = np.asarray(np.nonzero(seed_ids >= 0))
+    neighbor_xy = base_xy[:, np.newaxis, :] + NEIGHBORS[..., np.newaxis]
+    np.testing.assert_equal(neighbor_xy >= 0, True, err_msg='Out of boundary neighbour')
+    np.testing.assert_equal((neighbor_xy.T < altitude.shape).T, True, err_msg='Out of boundary neighbour')
+
+    # Retrieve IDs/altitudes to avoid constant update of 'seed_ids'
+    base_ids = seed_ids[tuple(base_xy)]
+    neighbor_ids = seed_ids[tuple(neighbor_xy)]
+    neighbor_alts = altitude[tuple(neighbor_xy)]
+
+    for _ in iter(bool, True) if iterations is True else range(iterations):
+        # The neighbors of the same seed IDs are ignored by lowering its altitude
+        # If all are such (island internal point), the point is removed
+        mask = (base_ids == neighbor_ids) | (neighbor_ids == SEED_ID_NONE)
+        neighbor_alts[mask & np.isfinite(neighbor_alts)] = -np.inf      # Keep NaNs (why-not)
+        mask = ~mask.all(0)
+
+        # Drop boundary islands ("internal" just merged to a boundary one)
+        mask &= base_ids != SEED_ID_BOUND
+        if not mask.any():
+            # All points are processed
+            break
+        base_xy = base_xy[:, mask]
+        neighbor_xy = neighbor_xy[..., mask]
+        base_ids = base_ids[mask]
+        neighbor_ids = neighbor_ids[:, mask]
+        neighbor_alts = neighbor_alts[:, mask]
+
+        #
+        # Process arrays based on the lowest altitude between each base and its highest neighbor
+        # The neighbors of the same seed IDs must be ignored when processing
+        #
+        alt_minmax = np.nanmax(neighbor_alts, 0)
+        alt_minmax = np.min((alt_minmax, altitude[tuple(base_xy)]), 0)
+
+        # Select the max-altitude leaf, neighbor pair. Merge islands
+        pair_idx = np.argmax(alt_minmax)
+        pair_idx = np.nanargmax(neighbor_alts[:, pair_idx]), pair_idx
+
+        b_xy = base_xy[:, pair_idx[1]]
+        n_xy = neighbor_xy[:, *pair_idx]
+        b_id = base_ids[pair_idx[1]]
+        n_id = neighbor_ids[pair_idx]
+        print(f'  Merging {b_xy} (island {b_id}/{seed_ids[*b_xy]}) into {n_xy} (island {n_id}/{seed_ids[*n_xy]}), altitude {alt_minmax[pair_idx[1]]}')
+        flip_lines(mgrid_n, b_xy[:, np.newaxis])
+        mgrid_n[:, *b_xy] = n_xy
+
+        # Replace IDs of merged island (this makes more leaves "internal")
+        base_ids[base_ids == b_id] = n_id
+        neighbor_ids[neighbor_ids == b_id] = n_id
+
+    return mgrid_n
+
 def plot_figure(fig: go.Figure, dem_band: gdal_utils.gdal_dem_band, mgrid_n_list: list) -> None:
     """Create figure plot"""
     indices = np.moveaxis(np.indices(dem_band.shape), 0, -1)
@@ -311,7 +409,7 @@ def plot_figure(fig: go.Figure, dem_band: gdal_utils.gdal_dem_band, mgrid_n_list
         res = *res, data
 
         # Seed island identification
-        seed_ids, leaf_mask, seed_mask = get_seed_ids(mgrid_n, none_id=-1, leaf_seed_id=-2)
+        seed_ids, leaf_mask, seed_mask = get_seed_ids(mgrid_n, none_id=-1, leaf_seed_id=-2, boundary_id=-3)
         border_mask = isolate_borders(mgrid_n, seed_ids)
         border_mask &= valid_mask   # Hide "NoData" altitudes
         all_mask = border_mask | leaf_mask | seed_mask
@@ -406,7 +504,7 @@ def main(args):
                 else gdal_utils.draft_distance(dem_band) if args.gradient == DISTANCE_DRAFT \
                 else None
         altitude = dem_band.get_elevation(True)
-        mgrid_n, slope = get_gradient_mgrid(altitude, distance=distance)
+        mgrid_n, slope = get_gradient_mgrid_new(altitude, distance=distance)
         # Show slope / altitude difference
         if distance is None:
             format = '%d m'
@@ -415,6 +513,12 @@ def main(args):
             slope = np.rad2deg(slope)
         slope = np.vectorize(lambda v: format%v, otypes=[object])(slope)
         mgrid_n_list.append(('Gradient', mgrid_n, slope))
+
+        if args.merge_islands is not False:
+            mgrid_n_list.append(('Gradient-joined',
+                   join_seed_islands(altitude, mgrid_n.copy(), iterations=args.merge_islands)))
+            mgrid_n_list.append(('Gradient-joined [new]',
+                    join_seed_islands_new(altitude, mgrid_n.copy(), iterations=args.merge_islands)))
 
     # Load neighbor-grids
     if args.mgrid_n is not None:
@@ -496,6 +600,9 @@ if __name__ == '__main__':
             help=f'Mapbox layout style, default: "{DEF_MAPBOX_STYLE}"')
     parser.add_argument('--gradient', nargs='?',
             choices=[DISTANCE_DRAFT, DISTANCE_TM, DISTANCE_GEOD], const=True,
+            help=f'Generate gradient mgrid-n, specify distance calculation method to use actual slope')
+    # args.merge_islands: False - no, True - all, <int> - limited iterations
+    parser.add_argument('--merge-islands', nargs='?', type=int, const=True, default=False,
             help=f'Generate gradient mgrid-n, specify distance calculation method to use actual slope')
     args = parser.parse_args()
 
