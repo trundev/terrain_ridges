@@ -260,93 +260,6 @@ def join_seed_islands(altitude: np.array, mgrid_n: np.array, *,
     # Special seed IDs
     SEED_ID_NONE = -1       # Unreachable or invalid
     SEED_ID_BOUND = -2      # Boundary (outside) points
-    seed_ids, leaf_mask, seed_mask = get_seed_ids(mgrid_n,
-            none_id=SEED_ID_NONE, leaf_seed_id=SEED_ID_NONE)
-    # Use both leaves asn seeds as join ends
-    leaf_mask |= seed_mask
-
-    #
-    # Isolate leaf neighbor coordinates, altitude and seed IDs
-    #
-    leaf_xy = np.asarray(np.nonzero(leaf_mask))
-    neighbor_xy = leaf_xy[:, np.newaxis, :] + NEIGHBORS[..., np.newaxis]
-    # Isolate out-of-boundary points
-    bound_mask = (neighbor_xy < 0).any(0) | (neighbor_xy.T >= altitude.shape).T.any(0)
-
-    # Altitudes of all neighbors of each leaf, the boundary ones must be processed with priority
-    neighbor_alts = np.full_like(altitude, np.inf, shape=neighbor_xy.shape[1:])
-    neighbor_alts[~bound_mask] = altitude[tuple(neighbor_xy[:, ~bound_mask])]
-
-    # Seed IDs of all neighbors of each leaf, -2 for boundary (outsiders)
-    neighbor_ids = np.full_like(seed_ids, SEED_ID_BOUND, shape=neighbor_xy.shape[1:])
-    neighbor_ids[~bound_mask] = seed_ids[tuple(neighbor_xy[:, ~bound_mask])]
-
-    #
-    # Prepare leafs altitude and seed IDs
-    #
-    leaf_alts = altitude[leaf_mask]
-    leaf_ids = seed_ids[leaf_mask]
-    del leaf_mask, seed_ids, bound_mask
-
-    for _ in iter(bool, True) if iterations is True else range(iterations):
-        # Drop "internal" leaves (surrounded by the same seed ID or invalid)
-        mask = ((leaf_ids != neighbor_ids) & (neighbor_ids != SEED_ID_NONE)).any(0)
-        if not mask.any():
-            # All points are processed
-            break
-        leaf_ids = leaf_ids[mask]
-        leaf_alts = leaf_alts[mask]
-        leaf_xy = leaf_xy[:, mask]
-        neighbor_ids = neighbor_ids[:, mask]
-        neighbor_alts = neighbor_alts[:, mask]
-        neighbor_xy = neighbor_xy[..., mask]
-
-        # The neighbors of the same seed IDs must be ignored when processing
-        neighbor_alts[leaf_ids == neighbor_ids] = -np.inf
-
-        #
-        # Process arrays based on the lowest altitude between each leaf and its highest neighbor
-        # Note:
-        # This is almost always the same as leaf altutude
-        #
-        alt_minmax = np.min((np.nanmax(neighbor_alts, 0), leaf_alts), 0)
-
-        # Select the max-altitude leaf, neighbor pair. Merge islands
-        pair_idx = np.argmax(alt_minmax)
-        pair_idx = np.nanargmax(neighbor_alts[:, pair_idx]), pair_idx
-
-        l_xy = leaf_xy[:, pair_idx[1]]
-        l_id = leaf_ids[pair_idx[1]]
-        n_xy = neighbor_xy[:, *pair_idx]
-        n_id = neighbor_ids[pair_idx]
-        print(f'  Merging {l_xy} (island {l_id}) into {n_xy} (island {n_id}), altitude {alt_minmax[pair_idx[1]]}')
-        flip_lines(mgrid_n, l_xy[:, np.newaxis])
-        if (n_xy >= 0).all() and (n_xy < altitude.shape).all():
-            mgrid_n[:, *l_xy] = n_xy
-
-        # Replace IDs of merged island (this makes more leaves "internal")
-        if l_id == SEED_ID_BOUND:
-            # The "boundary" ID must persist, to prevent merge between boundary islands
-            l_id, n_id = n_id, l_id
-        neighbor_ids[neighbor_ids == l_id] = n_id
-        leaf_ids[leaf_ids == l_id] = n_id
-
-        # Drop the processed pair
-        leaf_ids = np.delete(leaf_ids, pair_idx[1])
-        leaf_alts = np.delete(leaf_alts, pair_idx[1])
-        leaf_xy = np.delete(leaf_xy, pair_idx[1], axis=-1)
-        neighbor_ids = np.delete(neighbor_ids, pair_idx[1], axis=-1)
-        neighbor_alts = np.delete(neighbor_alts, pair_idx[1], axis=-1)
-        neighbor_xy = np.delete(neighbor_xy, pair_idx[1], axis=-1)
-
-    return mgrid_n
-
-def join_seed_islands_new(altitude: np.array, mgrid_n: np.array, *,
-        iterations: int or True=True) -> np.array:
-    """Connect neighbor-grid islands along the highest adjacent leafs"""
-    # Special seed IDs
-    SEED_ID_NONE = -1       # Unreachable or invalid
-    SEED_ID_BOUND = -2      # Boundary (outside) points
     seed_ids, _, _ = get_seed_ids(mgrid_n,
             none_id=SEED_ID_NONE, leaf_seed_id=SEED_ID_NONE, boundary_id=SEED_ID_BOUND)
 
@@ -404,6 +317,108 @@ def join_seed_islands_new(altitude: np.array, mgrid_n: np.array, *,
         # Replace IDs of merged island (this makes more leaves "internal")
         base_ids[base_ids == b_id] = n_id
         neighbor_ids[neighbor_ids == b_id] = n_id
+
+    return mgrid_n
+
+def join_seed_islands_new(altitude: np.array, mgrid_n: np.array, *,
+        iterations: int or True=True, distance: gdal_utils.tm_distance or None=None) -> np.array:
+    """Connect neighbor-grid islands along the highest adjacent leafs"""
+    # Special seed IDs
+    SEED_ID_NONE = -1       # Unreachable or invalid
+    SEED_ID_BOUND = -2      # Boundary (outside) points
+    seed_ids, _, _ = get_seed_ids(mgrid_n,
+            none_id=SEED_ID_NONE, leaf_seed_id=SEED_ID_NONE, boundary_id=SEED_ID_BOUND)
+    # Ensure "NoData" points are not marked as boundary
+    seed_ids[np.isnan(altitude)] = SEED_ID_NONE
+
+    #
+    # Process first the "internal" islands only
+    #
+    # Start with all non-boundary points, isolate neighbors
+    base_xy = np.asarray(np.nonzero(seed_ids >= 0))
+    neighbor_xy = base_xy[:, np.newaxis, :] + NEIGHBORS[..., np.newaxis]
+    np.testing.assert_equal(neighbor_xy >= 0, True, err_msg='Out of boundary neighbour')
+    np.testing.assert_equal((neighbor_xy.T < altitude.shape).T, True, err_msg='Out of boundary neighbour')
+
+    # Retrieve IDs/altitudes to avoid constant update of 'seed_ids'
+    base_ids = seed_ids[tuple(base_xy)]
+    neighbor_ids = seed_ids[tuple(neighbor_xy)]
+
+    # Obtain each pair of bordering points
+    # dimensions: x-y, base-neighbor, pairs
+    mask = (base_ids > neighbor_ids) & (neighbor_ids != SEED_ID_NONE)
+    base_xy = np.broadcast_to(base_xy[:, np.newaxis, :], shape=neighbor_xy.shape)
+    pair_xy = np.stack((base_xy[:, mask], neighbor_xy[:, mask]), axis=1)
+    del base_xy, neighbor_xy
+    base_ids = np.broadcast_to(base_ids[np.newaxis, :], shape=neighbor_ids.shape)
+    pair_ids = np.stack((base_ids[mask], neighbor_ids[mask]))
+    del base_ids, neighbor_ids
+
+    # Sort by the lower altitude of each neighbor, then by 'slope' where these match
+    pair_slope_alts = altitude[tuple(pair_xy)]
+    slope = pair_slope_alts[1] - pair_slope_alts[0]
+    # Use actual slope (vert / hor)
+    if distance is not None:
+        slope /= distance.get_distance(*np.moveaxis(pair_xy, 0, -1), flat=True)
+    # Use lexsort(): sort using multiple keys: primary key (altitude) in last column
+    pair_slope_alts[:] = np.abs(slope), pair_slope_alts.min(0)
+    alt_lexsort = np.lexsort(pair_slope_alts)[::-1]
+    pair_slope_alts = pair_slope_alts[:, alt_lexsort]
+    pair_xy = pair_xy[..., alt_lexsort]
+    pair_ids = pair_ids[:, alt_lexsort]
+    del alt_lexsort, slope
+
+    if distance is None:
+        high_alts = altitude[tuple(pair_xy)].max(0)
+        assert (high_alts[:-1] >= high_alts[1:])[pair_slope_alts[1, :-1] == pair_slope_alts[1, 1:]].all(), \
+                'Pairs NOT sorted by higher altitude, where lowers are equal'
+        del high_alts
+
+    for _ in iter(bool, True) if iterations is True else range(iterations):
+        # Extract unique pair IDs only (highest ones)
+        _, unique_idx = np.unique(pair_ids, axis=-1, return_index=True)
+        # Confirm the unique_idx points to the highest point amongst each border
+        # [slow operation]
+        if True:
+            pair_groups = (pair_ids[..., np.newaxis] == pair_ids[:, np.newaxis, unique_idx]).all(0)
+            pair_groups = np.ma.masked_array(*np.broadcast_arrays(pair_slope_alts[1, :, np.newaxis], ~pair_groups))
+            pair_groups = pair_groups.max(0)
+            np.testing.assert_equal(pair_slope_alts[1, unique_idx], pair_groups,
+                    err_msg='Improper indices were selected by numpy.unique()')
+            del pair_groups
+        # Reorder by altitude (unique_idx)
+        unique_idx = np.sort(unique_idx)
+        pair_slope_alts = pair_slope_alts[:, unique_idx]
+        np.testing.assert_equal(pair_slope_alts[1, :-1] >= pair_slope_alts[1, 1:], True,
+                err_msg='Altitudes must be sorted here')
+        pair_xy = pair_xy[..., unique_idx]
+        pair_ids = pair_ids[:, unique_idx]
+
+        # Pick a pair and merge it
+        idx = 0
+        b_xy, n_xy = pair_xy[..., idx].T
+        b_id, n_id = pair_ids[:, idx]
+        assert b_id >= 0, 'Base ID must be "regular"'
+        print(f'  Merging {b_xy} (island {b_id}/{seed_ids[*b_xy]})'
+              f' into {n_xy} (island {n_id}/{seed_ids[*n_xy]}), slope/altitude {pair_slope_alts[:, idx]}')
+        flip_lines(mgrid_n, b_xy[:, np.newaxis])
+        mgrid_n[:, *b_xy] = n_xy
+
+        # Replace IDs of merged island (this makes some pairs "internal")
+        pair_ids[pair_ids == b_id] = n_id
+        mask = pair_ids[0] != pair_ids[1]
+        # Treat all boundary islands as the same
+        mask &= (pair_ids >= 0).any(0)
+        if not mask.any():
+            # All points are processed
+            break
+        pair_slope_alts = pair_slope_alts[:, mask]
+        pair_xy = pair_xy[..., mask]
+        pair_ids = pair_ids[:, mask]
+        # Keep IDs sorted to avoid unique duplicates
+        mask = pair_ids[0] < pair_ids[1]
+        pair_xy[..., mask] = pair_xy[:, ::-1, mask]
+        pair_ids[:, mask] = pair_ids[::-1, mask]
 
     return mgrid_n
 
@@ -552,7 +567,7 @@ def main(args):
             mgrid_n_list.append(('Gradient-joined',
                    join_seed_islands(altitude, mgrid_n.copy(), iterations=args.merge_islands)))
             mgrid_n_list.append(('Gradient-joined [new]',
-                    join_seed_islands_new(altitude, mgrid_n.copy(), iterations=args.merge_islands)))
+                    join_seed_islands_new(altitude, mgrid_n.copy(), iterations=args.merge_islands, distance=distance)))
 
     # Load neighbor-grids
     if args.mgrid_n is not None:
