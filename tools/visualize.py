@@ -368,6 +368,12 @@ def join_seed_islands_new(altitude: np.array, mgrid_n: np.array, *,
     pair_ids = pair_ids[:, alt_lexsort]
     del alt_lexsort, slope
 
+    # Coverage of all "regular" seed IDs (0 to seed_ids.max())
+    id_coverage = (seed_ids.reshape(-1, 1) == np.arange(seed_ids.max()+1)).sum(0)
+    id_coverage = np.ma.masked_array(id_coverage, mask=True)
+    # Unmask only the ones from "pair_ids" (avoid isolated islands)
+    id_coverage.mask[pair_ids[pair_ids >= 0]] = False
+
     if distance is None:
         high_alts = altitude[tuple(pair_xy)].max(0)
         assert (high_alts[:-1] >= high_alts[1:])[pair_slope_alts[1, :-1] == pair_slope_alts[1, 1:]].all(), \
@@ -395,14 +401,47 @@ def join_seed_islands_new(altitude: np.array, mgrid_n: np.array, *,
         pair_ids = pair_ids[:, unique_idx]
 
         # Pick a pair and merge it
-        idx = 0
+        if False:   # the highest one
+            idx = 0
+        elif True: # the smallest island amongst base-s
+            id_min = id_coverage.argmin()
+            idx = np.argmax((pair_ids == id_min).any(0))    # First pair with 'id_min' (highest altitude)
+            if pair_ids[0, idx] != id_min:
+                # Ensure "id_min" is the one to be merged (base)
+                pair_xy[..., idx] = pair_xy[:, ::-1, idx]
+                pair_ids[:, idx] = pair_ids[::-1, idx]
+        else:       # both are "internal" islands
+            idx = 0
+            # Obtain all pairs of "non-boundary" islands
+            int_mask = (pair_ids >= 0).all(0)
+            while not int_mask[idx] and int_mask.any():
+                # Pick first "non-boundary" pair
+                idx = np.argmax(int_mask)
+                # Mask-out pairs, where both IDs are included in the pairs before "idx"
+                mask = (pair_ids[..., np.newaxis] != pair_ids[:, :idx].flat).all(-1).any(0)
+                if not mask.any():
+                    break   # all "non-boundary" pairs have higher counterpart
+                # Pick first such highest pair
+                idx = np.argmax(mask)
+                int_mask &= mask
+            if not int_mask[idx]:
+                break   # No suitable pairs were found
+            assert (pair_ids[:, idx] >= 0).all(), f'Boundary island {pair_ids[:, idx]} was selected'
+
         b_xy, n_xy = pair_xy[..., idx].T
         b_id, n_id = pair_ids[:, idx]
         assert b_id >= 0, 'Base ID must be "regular"'
-        print(f'  Merging {b_xy} (island {b_id}/{seed_ids[*b_xy]})'
-              f' into {n_xy} (island {n_id}/{seed_ids[*n_xy]}), slope/altitude {pair_slope_alts[:, idx]}')
+        assert (pair_ids[:, :idx] != b_id).all() or (pair_ids[:, :idx] != n_id).all(), 'Pair must be highest at-least for one of islands'
+        n_cov = id_coverage[n_id] if n_id >= 0 else None
+        print(f'  Merging {b_xy} (island {b_id}/{seed_ids[*b_xy]}, size {id_coverage[b_id]})'
+              f' into {n_xy} (island {n_id}/{seed_ids[*n_xy]}, size {n_cov}), slope/altitude {pair_slope_alts[:, idx]}')
         flip_lines(mgrid_n, b_xy[:, np.newaxis])
         mgrid_n[:, *b_xy] = n_xy
+
+        # Update islands coverage
+        if n_id >= 0:
+            id_coverage[n_id] += id_coverage[b_id]
+        id_coverage.mask[b_id] = True
 
         # Replace IDs of merged island (this makes some pairs "internal")
         pair_ids[pair_ids == b_id] = n_id
