@@ -23,6 +23,7 @@ DISTANCE_GEOD = 'geod'
 # Discrete color for seed-island coverage
 import plotly.colors
 SEED_ID_COLORS = plotly.colors.sequential.Plotly3
+SEED_ID_COLORS_NEG = plotly.colors.sequential.Turbo
 
 #
 # From ridges.py
@@ -163,11 +164,19 @@ def get_seed_ids(mgrid_n: np.array, *, none_id: int,
         seed_ids[n_num == leaf_seed_id] = leaf_seed_id
         seed_mask[n_num == leaf_seed_id] = False
     # Identify boundary islands
+    bound_seed_mask = False
     if boundary_id is not None:
-        for i in range(seed_ids.ndim):
-            sl = np.s_[:,] * i
-            seed_ids[sl + np.s_[:1,]] = seed_ids[sl + np.s_[-1:,]] = boundary_id
-            seed_mask[sl + np.s_[:1,]] = seed_mask[sl + np.s_[-1:,]] = False
+        # Assign 'boundary_id' to all boundary points
+        mask = np.ones_like(seed_mask)
+        mask[np.s_[1:-1,] * seed_mask.ndim] = False
+        seed_ids[mask] = boundary_id
+        bound_seed_mask = seed_mask.copy()
+        seed_mask[mask] = False
+        bound_seed_mask[~mask] = False
+        # Assign unique IDs to all real-seeds at the boundaries
+        assert boundary_id < none_id and (leaf_seed_id is None or boundary_id < leaf_seed_id), \
+                f'boundary_id {boundary_id} must be below none_id {none_id} and leaf_seed_id {leaf_seed_id}'
+        seed_ids[bound_seed_mask] = boundary_id - np.arange(np.count_nonzero(bound_seed_mask)) - 1
 
     seed_ids[seed_mask] = np.arange(np.count_nonzero(seed_mask)) + base_id
     # Expand the seed IDs till all non-seeds got ID
@@ -180,7 +189,20 @@ def get_seed_ids(mgrid_n: np.array, *, none_id: int,
 
     np.testing.assert_equal(seed_ids[seed_mask], np.arange(np.count_nonzero(seed_mask)) + base_id,
             err_msg='Unexpected order of seed IDs')
-    return seed_ids, n_num == 0, seed_mask
+    return seed_ids, n_num == 0, seed_mask | bound_seed_mask
+
+def seed_ids_2_seed_xy(seed_ids: np.array, seed_mask: np.array) -> np.array:
+    """Map between ID and seed coordinates, also works for negatives (boundary seeds)"""
+    res_size = max(seed_ids.max() + 1, 0)
+    if seed_ids.min() < 0:
+        res_size -= seed_ids.min()
+    # The "max()" is This is to provoke "out of bounds" for unknown IDs
+    seed_xy = np.full((seed_mask.ndim, res_size), max(seed_mask.shape))
+    seed_xy[:, seed_ids[seed_mask]] = np.indices(seed_mask.shape)[:, seed_mask]
+
+    min_max = [seed_ids[seed_mask].min(), seed_ids[seed_mask].max()]
+    np.testing.assert_equal(seed_ids[*seed_xy[:, min_max]], min_max, err_msg='Possible ID to xy map overlap')
+    return seed_xy
 
 # Helper index arrays (2x9 and 2x8)
 NEIGHBORS = np.arange(3) - 1
@@ -233,12 +255,13 @@ def isolate_borders(mgrid_n: np.array, seed_ids: np.array) -> np.array:
     return res_mask
 
 def join_seed_islands(altitude: np.array, mgrid_n: np.array, *,
-            iterations: int or True=True) -> np.array:
+        iterations: int or True=True) -> np.array:
     """Connect neighbor-grid islands along the highest adjacent leafs"""
     # Special seed IDs
     SEED_ID_NONE = -1       # Unreachable or invalid
     SEED_ID_BOUND = -2      # Boundary (outside) points
-    seed_ids, leaf_mask, seed_mask = get_seed_ids(mgrid_n, none_id=SEED_ID_NONE, leaf_seed_id=SEED_ID_NONE)
+    seed_ids, leaf_mask, seed_mask = get_seed_ids(mgrid_n,
+            none_id=SEED_ID_NONE, leaf_seed_id=SEED_ID_NONE)
     # Use both leaves asn seeds as join ends
     leaf_mask |= seed_mask
 
@@ -349,7 +372,7 @@ def join_seed_islands_new(altitude: np.array, mgrid_n: np.array, *,
         mask = ~mask.all(0)
 
         # Drop boundary islands ("internal" just merged to a boundary one)
-        mask &= base_ids != SEED_ID_BOUND
+        mask &= base_ids >= 0
         if not mask.any():
             # All points are processed
             break
@@ -409,24 +432,34 @@ def plot_figure(fig: go.Figure, dem_band: gdal_utils.gdal_dem_band, mgrid_n_list
         res = *res, data
 
         # Seed island identification
-        seed_ids, leaf_mask, seed_mask = get_seed_ids(mgrid_n, none_id=-1, leaf_seed_id=-2, boundary_id=-3)
+        seed_ids, leaf_mask, seed_mask = get_seed_ids(
+                mgrid_n, none_id=-1, leaf_seed_id=-2, boundary_id=-3)
         border_mask = isolate_borders(mgrid_n, seed_ids)
         border_mask &= valid_mask   # Hide "NoData" altitudes
         all_mask = border_mask | leaf_mask | seed_mask
-        # Text to include seed ID and its coordinates
-        seed_xy = np.nonzero(seed_mask)
+        # Map between ID and seed coordinates, also works for negatives (boundary seeds)
+        seed_xy = seed_ids_2_seed_xy(seed_ids, seed_mask)
         def get_str(xy):
+            """Point info, to include seed ID and its coordinates"""
             sid = seed_ids[tuple(xy)]
             text = '[Leaf] ' if leaf_mask[tuple(xy)] else ''
-            text += f'[Seed, coverage {np.count_nonzero(sid == seed_ids)}] ' if seed_mask[tuple(xy)] else ''
-            text += f'Seed {sid}'
-            if sid >= 0:
-                text += f' at {seed_xy[0][sid]},{seed_xy[1][sid]}'
+            if seed_mask[tuple(xy)]:
+                text += f'[Seed, coverage {np.count_nonzero(sid == seed_ids)}] '
+            if sid == -1:
+                text += f'None'
+            elif sid == -2:
+                text += f'Leaf-seed'
+            elif sid == -3:
+                text += f'Boundary'
+            else:
+                text += f'Seed {sid} at {seed_xy[:, sid]}'
             return np.asarray(text, dtype=object)
         text_arr = np.apply_along_axis(get_str, 0, np.asarray(np.nonzero(all_mask)))
         del seed_xy
-        # Colorize
+        # Colorize (separate color-scale for positive/negative IDs)
         color_arr = np.choose(seed_ids[border_mask], SEED_ID_COLORS, mode='wrap')
+        mask = seed_ids[border_mask] < 0
+        color_arr[mask] = np.choose(seed_ids[border_mask][mask], SEED_ID_COLORS_NEG, mode='wrap')
         data = add_scatter_points(fig, lla_arr, border_mask,
                                   mode='markers', text_arr=text_arr[border_mask[all_mask]],
                                   marker=dict(symbol='circle', color=color_arr),
@@ -441,7 +474,8 @@ def plot_figure(fig: go.Figure, dem_band: gdal_utils.gdal_dem_band, mgrid_n_list
                                   name=f'Leafs', legendgroup=idx)
         res = *res, data
         # Real-seeds (self-pointing, but not leafs)
-        print(f'  Seeds: {np.count_nonzero(seed_mask)}, self-pointing: {np.count_nonzero(seed_mask | (seed_ids==-2))}')
+        print(f'  Seeds: {np.count_nonzero(seed_mask)} (non-boundary {np.count_nonzero(seed_ids[seed_mask] >= 0)}),'
+              f' self-pointing: {np.count_nonzero(seed_mask | (seed_ids==-2))}')
         data = add_scatter_points(fig, lla_arr, seed_mask,
                                   mode='markers', text_arr=text_arr[seed_mask[all_mask]],
                                   marker=dict(symbol='circle'),
