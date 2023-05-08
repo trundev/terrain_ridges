@@ -326,7 +326,7 @@ def join_seed_islands_new(altitude: np.array, mgrid_n: np.array, *,
     # Special seed IDs
     SEED_ID_NONE = -1       # Unreachable or invalid
     SEED_ID_BOUND = -2      # Boundary (outside) points
-    seed_ids, _, _ = get_seed_ids(mgrid_n,
+    seed_ids, _, seed_mask = get_seed_ids(mgrid_n,
             none_id=SEED_ID_NONE, leaf_seed_id=SEED_ID_NONE, boundary_id=SEED_ID_BOUND)
     # Ensure "NoData" points are not marked as boundary
     seed_ids[np.isnan(altitude)] = SEED_ID_NONE
@@ -373,6 +373,11 @@ def join_seed_islands_new(altitude: np.array, mgrid_n: np.array, *,
     id_coverage = np.ma.masked_array(id_coverage, mask=True)
     # Unmask only the ones from "pair_ids" (avoid isolated islands)
     id_coverage.mask[pair_ids[pair_ids >= 0]] = False
+
+    # Island neighbour (joints) list, initially self-pointing
+    joints_xy = seed_ids_2_seed_xy(seed_ids, seed_mask)
+    joints_xy = np.broadcast_to(joints_xy[:, np.newaxis, ...],
+            shape=(joints_xy.shape[0], 4) + joints_xy.shape[1:]).copy()
 
     if distance is None:
         high_alts = altitude[tuple(pair_xy)].max(0)
@@ -443,6 +448,14 @@ def join_seed_islands_new(altitude: np.array, mgrid_n: np.array, *,
             id_coverage[n_id] += id_coverage[b_id]
         id_coverage.mask[b_id] = True
 
+        # Compose xy-line for the joint
+        joints_xy[:, 1:3, b_id] = pair_xy[..., idx]
+        orig_n_id = seed_ids[*n_xy]
+        if orig_n_id >= 0 or orig_n_id < SEED_ID_BOUND:
+            joints_xy[:, 3, b_id] = joints_xy[:, 0, orig_n_id]
+        else:
+            joints_xy[:, 3, b_id] = joints_xy[:, 2, b_id]
+
         # Replace IDs of merged island (this makes some pairs "internal")
         pair_ids[pair_ids == b_id] = n_id
         mask = pair_ids[0] != pair_ids[1]
@@ -459,7 +472,9 @@ def join_seed_islands_new(altitude: np.array, mgrid_n: np.array, *,
         pair_xy[..., mask] = pair_xy[:, ::-1, mask]
         pair_ids[:, mask] = pair_ids[::-1, mask]
 
-    return mgrid_n
+    # Reduce joints to the ones starting from non-bounrdary seeds
+    joints_xy = joints_xy[..., :seed_ids.max()+1]
+    return mgrid_n, joints_xy
 
 def plot_figure(fig: go.Figure, dem_band: gdal_utils.gdal_dem_band, mgrid_n_list: list) -> None:
     """Create figure plot"""
@@ -484,6 +499,14 @@ def plot_figure(fig: go.Figure, dem_band: gdal_utils.gdal_dem_band, mgrid_n_list
                                    mode='lines', text_arr=info[0] if info else None,
                                    name=f'mgrid_n', legendgroup=idx, legendgrouptitle_text=name)
         res = *res, data
+
+        # Island joints-info
+        if len(info) > 1:
+            joints_xy = info[1]
+            data = add_scatter_lines(fig, lla_arr[tuple(joints_xy)],
+                                     mode='lines',
+                                     name=f'Joints', legendgroup=idx)
+            res = *res, data
 
         # Seed island identification
         seed_ids, leaf_mask, seed_mask = get_seed_ids(
@@ -605,8 +628,9 @@ def main(args):
         if args.merge_islands is not False:
             mgrid_n_list.append(('Gradient-joined',
                    join_seed_islands(altitude, mgrid_n.copy(), iterations=args.merge_islands)))
-            mgrid_n_list.append(('Gradient-joined [new]',
-                    join_seed_islands_new(altitude, mgrid_n.copy(), iterations=args.merge_islands, distance=distance)))
+            mgrid_n, joints = join_seed_islands_new(altitude, mgrid_n.copy(),
+                    iterations=args.merge_islands, distance=distance)
+            mgrid_n_list.append(('Gradient-joined [new]', mgrid_n, None, joints))
 
     # Load neighbor-grids
     if args.mgrid_n is not None:
