@@ -392,10 +392,8 @@ def join_seed_islands_new(altitude: np.array, mgrid_n: np.array, *,
         # [slow operation]
         if True:
             pair_groups = (pair_ids[..., np.newaxis] == pair_ids[:, np.newaxis, unique_idx]).all(0)
-            pair_groups = np.ma.masked_array(*np.broadcast_arrays(pair_slope_alts[1, :, np.newaxis], ~pair_groups))
-            pair_groups = pair_groups.max(0)
-            np.testing.assert_equal(pair_slope_alts[1, unique_idx], pair_groups,
-                    err_msg='Improper indices were selected by numpy.unique()')
+            np.testing.assert_equal(np.argmax(pair_groups, axis=0), unique_idx,
+                    err_msg='Indices selected by numpy.unique() are NOT the first ones')
             del pair_groups
         # Reorder by altitude (unique_idx)
         unique_idx = np.sort(unique_idx)
