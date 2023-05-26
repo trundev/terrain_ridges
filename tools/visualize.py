@@ -368,10 +368,14 @@ def join_seed_islands_new(altitude: np.array, mgrid_n: np.array, *,
     pair_ids = pair_ids[:, alt_lexsort]
     del alt_lexsort, slope
 
-    # Coverage of all "regular" seed IDs (0 to seed_ids.max())
-    id_coverage = (seed_ids.reshape(-1, 1) == np.arange(seed_ids.max()+1)).sum(0)
-    id_coverage = np.ma.masked_array(id_coverage, mask=True)
+    # Coverage of all seed IDs: first "regular" (0 to seed_ids.max()), then "boundary" (negatives)
+    unique_ids, count_ids = np.unique(seed_ids, return_counts=True)
+    # Reorder ID as array index (allow non-continuous and negative IDs)
+    id_coverage = np.full(max(unique_ids.max(), 0) - min(unique_ids.min(), 0) + 1, -1)
+    id_coverage[unique_ids] = count_ids
+    del unique_ids, count_ids
     # Unmask only the ones from "pair_ids" (avoid isolated islands)
+    id_coverage = np.ma.masked_array(id_coverage, mask=True)
     id_coverage.mask[pair_ids[pair_ids >= 0]] = False
 
     # Island neighbour (joints) list, initially self-pointing
@@ -408,6 +412,7 @@ def join_seed_islands_new(altitude: np.array, mgrid_n: np.array, *,
             idx = 0
         elif True: # the smallest island amongst base-s
             id_min = id_coverage.argmin()
+            assert id_coverage[id_min] > 0, 'Incorrect island (as of coverage) is selected'
             idx = np.argmax((pair_ids == id_min).any(0))    # First pair with 'id_min' (highest altitude)
             if pair_ids[0, idx] != id_min:
                 # Ensure "id_min" is the one to be merged (base)
@@ -435,15 +440,14 @@ def join_seed_islands_new(altitude: np.array, mgrid_n: np.array, *,
         b_id, n_id = pair_ids[:, idx]
         assert b_id >= 0, 'Base ID must be "regular"'
         assert (pair_ids[:, :idx] != b_id).all() or (pair_ids[:, :idx] != n_id).all(), 'Pair must be highest at-least for one of islands'
-        n_cov = id_coverage[n_id] if n_id >= 0 else None
         print(f'  Merging {b_xy} (island {b_id}/{seed_ids[*b_xy]}, size {id_coverage[b_id]})'
-              f' into {n_xy} (island {n_id}/{seed_ids[*n_xy]}, size {n_cov}), slope/altitude {pair_slope_alts[:, idx]}')
+              f' into {n_xy} (island {n_id}/{seed_ids[*n_xy]}, size {id_coverage.data[n_id]}), slope/altitude {pair_slope_alts[:, idx]}')
         flip_lines(mgrid_n, b_xy[:, np.newaxis])
         mgrid_n[:, *b_xy] = n_xy
 
-        # Update islands coverage
-        if n_id >= 0:
-            id_coverage[n_id] += id_coverage[b_id]
+        # Update islands coverage (also masked ones)
+        assert id_coverage.data[n_id] > 0
+        id_coverage.data[n_id] += id_coverage[b_id]
         id_coverage.mask[b_id] = True
 
         # Compose xy-line for the joint
