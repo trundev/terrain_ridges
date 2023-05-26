@@ -290,11 +290,13 @@ def join_seed_islands(altitude: np.array, mgrid_n: np.array, *,
     return mgrid_n
 
 def join_seed_islands_new(altitude: np.array, mgrid_n: np.array, *,
-        iterations: int or True=True, distance: gdal_utils.tm_distance or None=None) -> np.array:
+        iterations: int or True=True, distance: gdal_utils.tm_distance or None=None, inc_bound=False) -> np.array:
     """Connect neighbor-grid islands along the highest adjacent leafs"""
     # Special seed IDs
     SEED_ID_NONE = -1       # Unreachable or invalid
     SEED_ID_BOUND = -2      # Boundary (outside) points
+    if inc_bound:
+        SEED_ID_BOUND = None
     seed_ids, _, seed_mask = get_seed_ids(mgrid_n,
             none_id=SEED_ID_NONE, leaf_seed_id=SEED_ID_NONE, boundary_id=SEED_ID_BOUND)
     # Ensure "NoData" points are not marked as boundary
@@ -306,6 +308,12 @@ def join_seed_islands_new(altitude: np.array, mgrid_n: np.array, *,
     # Start with all non-boundary points, isolate neighbors
     base_xy = np.asarray(np.nonzero(seed_ids >= 0))
     neighbor_xy = base_xy[:, np.newaxis, :] + NEIGHBORS[..., np.newaxis]
+    if SEED_ID_BOUND is None:
+        # Replace out-of-boundary coordinates with "base" coordinate
+        # (later will be dropped as they'll have the same ID)
+        mask = (neighbor_xy.T < 0).T.any(0)
+        mask |= (neighbor_xy.T >= altitude.shape).T.any(0)
+        neighbor_xy[:, mask] = np.broadcast_to(base_xy[:, np.newaxis, :], shape=neighbor_xy.shape)[:, mask]
     np.testing.assert_equal(neighbor_xy >= 0, True, err_msg='Out of boundary neighbour')
     np.testing.assert_equal((neighbor_xy.T < altitude.shape).T, True, err_msg='Out of boundary neighbour')
 
