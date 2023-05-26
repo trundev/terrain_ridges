@@ -117,7 +117,7 @@ def add_scatter_mgrid_n(fig: go.Figure, lonlat_arr: np.array, mgrid_n_xy: np.arr
     return add_scatter_lines(fig, (lonlat_arr, lines_arr), text=text_arr, **scatter_kwargs)
 
 def get_seed_ids(mgrid_n: np.array, *, none_id: int,
-        leaf_seed_id: int or None=None, boundary_id: int or None=None,
+        leaf_seed_id: int or None=None, boundary_id: int or None=None, boundary_leaf_seeds: bool=False,
         base_id: int=0) -> list[np.array, np.array]:
     """Assign IDs to each seed island, start from `base_id`, `none_id`/`leaf_seed_id` for no-seed(loop)/leaf-seeds"""
     assert none_id < base_id, f'none_id {none_id} must be below base_id {base_id}'
@@ -142,6 +142,8 @@ def get_seed_ids(mgrid_n: np.array, *, none_id: int,
         bound_seed_mask = seed_mask.copy()
         seed_mask[mask] = False
         bound_seed_mask[~mask] = False
+        if boundary_leaf_seeds:
+            bound_seed_mask[mask] = True
         # Assign unique IDs to all real-seeds at the boundaries
         assert boundary_id < none_id and (leaf_seed_id is None or boundary_id < leaf_seed_id), \
                 f'boundary_id {boundary_id} must be below none_id {none_id} and leaf_seed_id {leaf_seed_id}'
@@ -297,10 +299,11 @@ def join_seed_islands_new(altitude: np.array, mgrid_n: np.array, *,
     SEED_ID_BOUND = -2      # Boundary (outside) points
     if inc_bound:
         SEED_ID_BOUND = None
-    seed_ids, _, seed_mask = get_seed_ids(mgrid_n,
-            none_id=SEED_ID_NONE, leaf_seed_id=SEED_ID_NONE, boundary_id=SEED_ID_BOUND)
+    seed_ids, _, seed_mask = get_seed_ids(mgrid_n, none_id=SEED_ID_NONE, leaf_seed_id=SEED_ID_NONE,
+            boundary_id=SEED_ID_BOUND, boundary_leaf_seeds=True)
     # Ensure "NoData" points are not marked as boundary
     seed_ids[np.isnan(altitude)] = SEED_ID_NONE
+    seed_mask[np.isnan(altitude)] = False
 
     #
     # Process first the "internal" islands only
@@ -385,8 +388,8 @@ def join_seed_islands_new(altitude: np.array, mgrid_n: np.array, *,
         pair_ids = pair_ids[:, unique_idx]
 
         # Pick a pair and merge it
-        if False:   # the highest one
-            idx = 0
+        if False:   # the highest one (alt-least one non-boundary)
+            idx = np.argmax((pair_ids>=0).any(0))
         elif True: # the smallest island amongst base-s
             id_min = id_coverage.argmin()
             assert id_coverage[id_min] > 0, 'Incorrect island (as of coverage) is selected'
@@ -438,18 +441,27 @@ def join_seed_islands_new(altitude: np.array, mgrid_n: np.array, *,
         # Replace IDs of merged island (this makes some pairs "internal")
         pair_ids[pair_ids == b_id] = n_id
         mask = pair_ids[0] != pair_ids[1]
-        # Treat all boundary islands as the same
-        mask &= (pair_ids >= 0).any(0)
-        if not mask.any():
-            # All points are processed
-            break
         pair_slope_alts = pair_slope_alts[:, mask]
         pair_xy = pair_xy[..., mask]
         pair_ids = pair_ids[:, mask]
+        if (pair_ids < 0).all():
+            # All non-boundary pairs are processed
+            break
         # Keep IDs sorted to avoid unique duplicates
         mask = pair_ids[0] < pair_ids[1]
         pair_xy[..., mask] = pair_xy[:, ::-1, mask]
         pair_ids[:, mask] = pair_ids[::-1, mask]
+
+    # Post process the result: save joined mgrid, filter (keep bridge lines only)
+    if True:
+        from ridges import filter_mgrid
+        #np.save('joined-mgrid_n_xy.npy', np.moveaxis(mgrid_n, 0, -1))
+        mask = seed_mask.copy()
+        mask[tuple(pair_xy)] = True     # Keep the "possible" joints between boundary islands
+        mgrid_n_flt = filter_mgrid(np.moveaxis(mgrid_n, 0, -1), np.asarray(np.nonzero(mask)).T)
+        #np.save('joined-filtered-mgrid_n_xy.npy', mgrid_n_flt)
+        mgrid_n = np.moveaxis(mgrid_n_flt, -1, 0)
+        joints_xy = joints_xy[:, 1:3, ...]  # Only joint-line, no lines to seeds
 
     # Reduce joints to the ones starting from non-bounrdary seeds
     joints_xy = joints_xy[..., :seed_ids.max()+1]
