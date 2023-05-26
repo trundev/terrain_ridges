@@ -116,37 +116,6 @@ def add_scatter_mgrid_n(fig: go.Figure, lonlat_arr: np.array, mgrid_n_xy: np.arr
         lines_arr = lines_arr * len_scale + lonlat_arr * (1 - len_scale)
     return add_scatter_lines(fig, (lonlat_arr, lines_arr), text=text_arr, **scatter_kwargs)
 
-def get_gradient_mgrid(altitude: np.array, *, distance: gdal_utils.tm_distance or None) -> list[np.array, np.array]:
-    """Generate gradient mgrid_n"""
-    mgrid = np.indices(altitude.shape)
-    grad_n = mgrid.copy()
-    slope_max = np.zeros_like(altitude)
-    for sl_left, sl_right in [
-            # along x
-            [(slice(0, -1), ...), (slice(1, None), ...)],
-            [(slice(1, None), ...), (slice(0, -1), ...)],
-            # along y
-            [(..., slice(0, -1)), (..., slice(1, None))],
-            [(..., slice(1, None)), (..., slice(0, -1))],
-            # along x\y
-            [(slice(0, -1), slice(0, -1)), (slice(1, None), slice(1, None))],
-            [(slice(1, None), slice(1, None)), (slice(0, -1), slice(0, -1))],
-            # along x/y
-            [(slice(0, -1), slice(1, None)), (slice(1, None), slice(0, -1))],
-            [(slice(1, None), slice(0, -1)), (slice(0, -1), slice(1, None))],
-        ]:
-        slope = altitude[sl_right] - altitude[sl_left]
-        # Use actual slope arctan(vert / hor)
-        if distance is not None:
-            # Distances between each point 'sl_left' and its neighbor at the 'sl_right' side
-            dist = distance.get_distance(mgrid[:, *sl_right].T, mgrid[:, *sl_left].T, flat=True).T
-            slope = np.arctan2(slope, dist)
-
-        mask = slope_max[sl_left] < slope
-        slope_max[sl_left][mask] = slope[mask]
-        grad_n[:, *sl_left][:, mask] = mgrid[:, *sl_right][:, mask]
-    return grad_n, slope_max
-
 def get_seed_ids(mgrid_n: np.array, *, none_id: int,
         leaf_seed_id: int or None=None, boundary_id: int or None=None,
         base_id: int=0) -> list[np.array, np.array]:
@@ -196,7 +165,7 @@ def seed_ids_2_seed_xy(seed_ids: np.array, seed_mask: np.array) -> np.array:
     res_size = max(seed_ids.max() + 1, 0)
     if seed_ids.min() < 0:
         res_size -= seed_ids.min()
-    # The "max()" is This is to provoke "out of bounds" for unknown IDs
+    # The "max()" is to provoke "out of bounds" for unknown IDs
     seed_xy = np.full((seed_mask.ndim, res_size), max(seed_mask.shape))
     seed_xy[:, seed_ids[seed_mask]] = np.indices(seed_mask.shape)[:, seed_mask]
 
@@ -210,7 +179,7 @@ NEIGHBORS_SELF = np.stack(np.broadcast_arrays(NEIGHBORS, NEIGHBORS[:,np.newaxis]
 # Drop the "self" entry
 NEIGHBORS = NEIGHBORS_SELF[:,(NEIGHBORS_SELF != 0).any(0)]
 
-def get_gradient_mgrid_new(altitude: np.array, *, distance: gdal_utils.tm_distance or None) -> list[np.array, np.array]:
+def get_gradient_mgrid(altitude: np.array, *, distance: gdal_utils.tm_distance or None) -> list[np.array, np.array]:
     """Generate gradient mgrid_n"""
     grad_xy = np.indices(altitude.shape)
     # Work on the "internal" points only
@@ -617,7 +586,7 @@ def main(args):
                 else gdal_utils.draft_distance(dem_band) if args.gradient == DISTANCE_DRAFT \
                 else None
         altitude = dem_band.get_elevation(True)
-        mgrid_n, slope = get_gradient_mgrid_new(altitude, distance=distance)
+        mgrid_n, slope = get_gradient_mgrid(altitude, distance=distance)
         # Show slope / altitude difference
         if distance is None:
             format = '%d m'
