@@ -1,6 +1,7 @@
 """Generate terrain ridges/valleys"""
 import sys
 import time
+import argparse
 import numpy
 import gdal_utils
 
@@ -14,11 +15,12 @@ VALID_NEIGHBOR_DIRS = numpy.array(
 
 # Keep the seed away from the edges
 SEED_INFLATE = 1
-# Select distance caclulation method:
-#   0 - Real geodetic distance (geod_distance): Use pyproj.Geod.inv()
-#   1 - Transverse Mercator (tm_distance): Use TM origin at the center of raster data
-#   2 - Draft (draft_distance): Use pre-calculated pixel size by tm_distance for all pixels
-DISTANCE_METHOD = 0
+# Distance caclulation methods, '--distance-method' option:
+DISTANCE_METHODS = {
+    'draft': gdal_utils.draft_distance,     # Draft: use pre-calculated pixel size by tm_distance for all pixels
+    'tm': gdal_utils.tm_distance,           # Transverse Mercator: use TM origin at the center of raster data
+    'geod': gdal_utils.geod_distance,       # Real geodetic distance: use pyproj.Geod.inv()
+}
 
 def VECTOR_LAYER_NAME(valleys): return 'valleys' if valleys else 'ridges'
 def VECTOR_FEATURE_STYLE(valleys): return 'PEN(c:#0000FF,w:2px)' if valleys else 'PEN(c:#FF0000,w:2px)'
@@ -28,20 +30,14 @@ def VECTOR_FEATURE_STYLE(valleys): return 'PEN(c:#0000FF,w:2px)' if valleys else
 #   https://wiki.openstreetmap.org/wiki/Tag:natural%3Dvalley
 def FEATURE_OSM_NATURAL(valleys): return 'valley' if valleys else 'ridge'
 
-KEEP_SNAPSHOT = True
-RESUME_FROM_SNAPSHOT = 0    # Currently 0 to 3
 # GDAL layer creation options
 DEF_LAYER_OPTIONS = []
 BYDVR_LAYER_OPTIONS = {
     'LIBKML': ['ADD_REGION=YES', 'FOLDER=YES'],
 }
 
-# Keep each branch-line one pixes away from its parent
-SEPARATED_BRANCHES = False
-# Suppress the jagged geometry effect, caused by the DEM resolution
-SMOOTHEN_GEOMETRY = False
 # Run extra (slow) internal tests
-EXTRA_ASSERTS = False
+ASSERT_LEVEL = 2
 
 #
 # Internal data-types, mostly for keep/resume support
@@ -163,7 +159,8 @@ def trace_ridges(dem_band, valleys=False, boundary_val=None):
         n_xy = process_neighbors(dem_band, mgrid_n_xy, pending_mask, boundary_mask, x_y)
         if n_xy is not None:
             alts = dem_band.get_elevation(n_xy)
-            assert not numpy.isnan(alts).any(), '"NoDataValue" point(s) %s are marked for processing'%n_xy[numpy.isnan(alts)]
+            if ASSERT_LEVEL >= 1:
+                assert not numpy.isnan(alts).any(), '"NoDataValue" point(s) %s are marked for processing'%n_xy[numpy.isnan(alts)]
             # The valleys are handled by turning the elevations upside down
             if valleys:
                 alts = -alts
@@ -238,7 +235,7 @@ def accumulate_by_mgrid(src_arr, mgrid_n_xy, mask=Ellipsis):
     indices = numpy.moveaxis(indices, -1, 0) if indices.ndim > 2 else indices.T # Performance optimization
     numpy.add.at(res_arr, tuple(indices), src_arr)
 
-    if EXTRA_ASSERTS:
+    if ASSERT_LEVEL >= 3:
         assert abs(numpy.nansum(res_arr) - numpy.nansum(src_arr)) * 1e6 <= numpy.nanmax(src_arr), \
                 f'Total sum deviation {numpy.nansum(res_arr) - numpy.nansum(src_arr)}'
     return res_arr
@@ -298,7 +295,8 @@ def arrange_lines(mgrid_n_xy, area_arr, trunks_only):
         x_y = x_y[mask]
         # Advance the points, which are still at graph-bridges
         x_y = gdal_utils.read_arr(mgrid_n_xy, x_y)
-        assert (gdal_utils.read_arr(n_num, x_y) == 1).all()
+        if ASSERT_LEVEL >= 2:
+            assert (gdal_utils.read_arr(n_num, x_y) == 1).all()
         gdal_utils.write_arr(n_num, x_y, 0)
         # Keep the intermediate results
         pend_mask[pend_mask] = mask
@@ -308,8 +306,9 @@ def arrange_lines(mgrid_n_xy, area_arr, trunks_only):
         pend_lines['area'][pend_mask] += area
     del bridge_mask
     del pend_mask
-    assert int(pend_lines['area'].sum()) == int(area_arr[all_leafs].sum()), 'Leaf-branch coverage area mismatch %.6f / %.6f km2'%(
-            pend_lines['area'].sum() / 1e6, area_arr[all_leafs].sum() / 1e6)
+    if ASSERT_LEVEL >= 2:
+        assert int(pend_lines['area'].sum()) == int(area_arr[all_leafs].sum()), 'Leaf-branch coverage area mismatch %.6f / %.6f km2'%(
+                pend_lines['area'].sum() / 1e6, area_arr[all_leafs].sum() / 1e6)
     # Trim leaf-trunks
     mask = gdal_utils.read_arr(valid_mask, pend_lines['x_y'])
     pend_lines = pend_lines[mask]
@@ -372,7 +371,8 @@ def arrange_lines(mgrid_n_xy, area_arr, trunks_only):
         progress_idx += 1
 
     # Confirm everything is processed
-    assert (n_num <= 1).all(), 'Unprocessed pixels at %s'%numpy.array(numpy.nonzero(n_num > 0)).T
+    if ASSERT_LEVEL >= 1:
+        assert (n_num <= 1).all(), 'Unprocessed pixels at %s'%numpy.array(numpy.nonzero(n_num > 0)).T
     return branch_lines
 
 def flip_lines(mgrid_n_xy, x_y):
@@ -474,7 +474,7 @@ class dst_layer_mgr:
 
     def get_layer(self, branch):
         """Obtain/create layer for specific geometry"""
-        # Select layer ID and chceck if it's already created
+        # Select layer ID and check if it's already created
         if self.multi_layer:
             level = round(get_zoom_level(self.spatial_ref, branch['area']))
             layer_id = self.id_fmt + '_level%d'%level
@@ -551,64 +551,28 @@ def smoothen_by_mgrid(lonlatalt, mgrid_n_xy):
 #
 # Main processing
 #
-def main(argv):
+def main(args):
     """Main entry"""
-    valleys = False
-    boundary_val = None
-    multi_layer = False
-    maxzoom_level = None
-    truncate = True
-    src_filename = dst_filename = None
-    while argv:
-        if argv[0][0] == '-':
-            if argv[0] == '-h':
-                return print_help()
-            if argv[0] == '-valley':
-                valleys = True
-            elif argv[0] == '-boundary_val':
-                argv = argv[1:]
-                boundary_val = float(argv[0])
-            elif argv[0] == '-multi_layer':
-                argv = argv[1:]
-                multi_layer = True
-                maxzoom_level = float(argv[0])
-                if not maxzoom_level:
-                    maxzoom_level = None
-            else:
-                return print_help('Unsupported option "%s"'%argv[0])
-        else:
-            if src_filename is None:
-                src_filename = argv[0]
-            elif dst_filename is None:
-                dst_filename = argv[0]
-            else:
-                return print_help('Unexpected argument "%s"'%argv[0])
-
-        argv = argv[1:]
-
-    if src_filename is None or dst_filename is None:
-        return print_help('Missing file-names')
-
     # Load DEM
-    dem_band = gdal_utils.dem_open(src_filename)
+    dem_band = gdal_utils.dem_open(args.src_dem_file)
     if dem_band is None:
-        return print_help('Unable to open "%s"'%src_filename)
+        return parser.exit(f'Unable to open source DEM "{args.src_dem_file}"')
 
-    dst_ds = gdal_utils.vect_create(dst_filename)
+    dst_ds = gdal_utils.vect_create(args.dst_ogr_file, drv_name=args.dst_format)
     if dst_ds is None:
-        return print_help('Unable to create "%s"'%src_filename)
+        return parser.exit(f'Unable to create destivation OGR "{args.dst_ogr_file}"')
 
     dem_band.load()
 
     #
     # Trace ridges/valleys
     #
-    if RESUME_FROM_SNAPSHOT < 1:
+    if args.resume_from_snapshot < 1:
 
         start = time.perf_counter()
 
         # Actual trace
-        mgrid_n_xy = trace_ridges(dem_band, valleys, boundary_val)
+        mgrid_n_xy = trace_ridges(dem_band, args.valleys, args.boundary_val)
         if mgrid_n_xy is None:
             print('Error: Failed to trace ridges', file=sys.stderr)
             return 2
@@ -619,18 +583,16 @@ def main(argv):
                 numpy.count_nonzero(ch_mask), mgrid_n_xy[...,0].size, duration))
         del ch_mask
 
-        if KEEP_SNAPSHOT:
-            keep_arrays(src_filename + '-1-', {'mgrid_n_xy': mgrid_n_xy,})
-    elif RESUME_FROM_SNAPSHOT == 1:
-        mgrid_n_xy, = restore_arrays(src_filename + '-1-', {'mgrid_n_xy': None,})
+        if args.keep_snapshots:
+            keep_arrays(args.src_dem_file + '-1-', {'mgrid_n_xy': mgrid_n_xy,})
+    elif args.resume_from_snapshot == 1:
+        mgrid_n_xy, = restore_arrays(args.src_dem_file + '-1-', {'mgrid_n_xy': None,})
 
     #
     # The coverage-area of each pixels is needed by arrange_lines()
     # The distance object is used to calculate the branch length
     #
-    distance = gdal_utils.geod_distance(dem_band) if 0 == DISTANCE_METHOD \
-            else gdal_utils.tm_distance(dem_band) if 1 == DISTANCE_METHOD \
-            else gdal_utils.draft_distance(dem_band)
+    distance = DISTANCE_METHODS[args.distance_method](dem_band)
     area_arr = calc_pixel_area(distance, dem_band.shape)
     print('Calculated total area %.2f km2, mean %.2f m2'%(area_arr.sum() / 1e6, area_arr.mean()))
 
@@ -639,7 +601,7 @@ def main(argv):
     # All the real-seeds become regular graph-nodes or "leaf" pixel.
     # The former start/leaf pixel of these branches becomes a "seed".
     #
-    if RESUME_FROM_SNAPSHOT < 2:
+    if args.resume_from_snapshot < 2:
 
         start = time.perf_counter()
 
@@ -659,13 +621,13 @@ def main(argv):
                 branch_lines.size, branch_lines['area'].max() / 1e6, branch_lines['area'].min() / 1e6,
                 duration))
 
-        if KEEP_SNAPSHOT:
-            keep_arrays(src_filename + '-2-', {
+        if args.keep_snapshots:
+            keep_arrays(args.src_dem_file + '-2-', {
                     'mgrid_n_xy': mgrid_n_xy,
                     'branch_lines': branch_lines,
                 })
-    elif RESUME_FROM_SNAPSHOT == 2:
-        mgrid_n_xy, branch_lines = restore_arrays(src_filename + '-2-', {
+    elif args.resume_from_snapshot == 2:
+        mgrid_n_xy, branch_lines = restore_arrays(args.src_dem_file + '-2-', {
                     'mgrid_n_xy': None,
                     'branch_lines': BRANCH_LINE_DTYPE,
                 })
@@ -673,7 +635,7 @@ def main(argv):
     #
     # Identify all the branches
     #
-    if RESUME_FROM_SNAPSHOT < 3:
+    if args.resume_from_snapshot < 3:
 
         start = time.perf_counter()
 
@@ -687,6 +649,7 @@ def main(argv):
         argsort = numpy.argsort(branch_lines['area'])
         branch_lines = numpy.take(branch_lines, argsort[::-1])
 
+        maxzoom_level = args.multi_layer if isinstance(args.multi_layer, (int, float)) else None
         if maxzoom_level is None:
             # Trim to a zoom-level, 3 levels above the mean pixel size
             min_area = numpy.nanmean(area_arr) * (4 ** 3)
@@ -707,15 +670,15 @@ def main(argv):
                 branch_lines.size, branch_lines['area'].max() / 1e6, branch_lines['area'].min() / 1e6,
                 duration))
 
-        if KEEP_SNAPSHOT:
-            keep_arrays(src_filename + '-3-', {
+        if args.keep_snapshots:
+            keep_arrays(args.src_dem_file + '-3-', {
                     'branch_lines': branch_lines,
                 })
-    elif RESUME_FROM_SNAPSHOT == 3:
-        mgrid_n_xy, = restore_arrays(src_filename + '-2-', {
+    elif args.resume_from_snapshot == 3:
+        mgrid_n_xy, = restore_arrays(args.src_dem_file + '-2-', {
                     'mgrid_n_xy': None,
                 })
-        branch_lines, = restore_arrays(src_filename + '-3-', {
+        branch_lines, = restore_arrays(args.src_dem_file + '-3-', {
                     'branch_lines': BRANCH_LINE_DTYPE,
                 })
 
@@ -726,23 +689,23 @@ def main(argv):
         start = time.perf_counter()
 
         # Branch coverage area of each pixel (branch['area'] assert only)
-        if EXTRA_ASSERTS:
+        if ASSERT_LEVEL >= 3:
             acc_area_arr = accumulate_pixel_coverage(area_arr, mgrid_n_xy)
         del area_arr
 
-        layer_mgr = dst_layer_mgr(dst_ds, dem_band.get_spatial_ref(), valleys, multi_layer)
+        layer_mgr = dst_layer_mgr(dst_ds, dem_band.get_spatial_ref(), args.valleys, args.multi_layer is not None)
         # Delete existing layers
-        if truncate:
+        if not args.append:
             layer_mgr.delete_all()
 
         # Generate x_y to lon/lat/alt conversion grid
         mgrid_lonlatalt = dem_band.xy2lonlatalt(get_mgrid(dem_band.shape))
-        if SMOOTHEN_GEOMETRY:
+        if args.smoothen_geometry:
             mgrid_lonlatalt = smoothen_by_mgrid(mgrid_lonlatalt, filter_mgrid(mgrid_n_xy, branch_lines['start_xy']))
 
         geometries = 0
         for branch in branch_lines:
-            if EXTRA_ASSERTS:
+            if ASSERT_LEVEL >= 3:
                 ar = gdal_utils.read_arr(acc_area_arr, branch['x_y'])
                 assert round(branch['area']) == round(ar), 'Accumulated branch coverage area mismatch %.6f / %.6f km2'%(
                         branch['area'] / 1e6, ar / 1e6)
@@ -752,7 +715,7 @@ def main(argv):
                 return 1
 
             # Advance one step forward to connect to the parent branch
-            if not SEPARATED_BRANCHES:
+            if not args.separated_branches:
                 x_y = branch['x_y']
                 branch['x_y'] = gdal_utils.read_arr(mgrid_n_xy, x_y)
             # Extract the branch pixel coordinates and calculate length
@@ -771,8 +734,8 @@ def main(argv):
             geom.set_field('Name', '%dm'%dist if dist < 10000 else '%dkm'%round(dist/1000))
             geom.set_field('Description', 'length: %.1f km, area: %.1f km2'%(dist / 1e3, branch['area'] / 1e6))
             if FEATURE_OSM_NATURAL:
-                geom.set_field('natural', FEATURE_OSM_NATURAL(valleys))
-            geom.set_style_string(VECTOR_FEATURE_STYLE(valleys))
+                geom.set_field('natural', FEATURE_OSM_NATURAL(args.valleys))
+            geom.set_style_string(VECTOR_FEATURE_STYLE(args.valleys))
 
             # Reverse the line to match the tracing direction
             for x_y in reversed(polyline):
@@ -786,18 +749,37 @@ def main(argv):
 
     return 0
 
-def print_help(err_msg=None):
-    if err_msg:
-        print('Error:', err_msg, file=sys.stderr)
-    print('Usage:', sys.argv[0], '[<options>] <src_filename> <dst_filename>')
-    print('\tOptions:')
-    print('\t-h\t- This screen')
-    print('\t-valley\t- Generate valleys, instead of ridges')
-    print('\t-boundary_val <ele> - Treat the neighbors next to <ele> as boundary')
-    print('\t-multi_layer <maxzoom> - Create multiple layers upto a zoom-level, 0 to auto-select (check OGR driver capabilities)')
-    return 0 if err_msg is None else 255
-
 if __name__ == '__main__':
-    ret = main(sys.argv[1:])
+    parser = argparse.ArgumentParser(description='Terrain ridges visualization')
+    parser.add_argument('src_dem_file',
+            help='Input DEM file, formats supported by https://gdal.org')
+    parser.add_argument('dst_ogr_file',
+            help='Output vector file, formats supported by https://gdal.org')
+    parser.add_argument('--dst-format', '-f',
+            help='Output format name')
+    parser.add_argument('--valleys', action='store_true',
+            help='Generate valleys, instead of ridges')
+    parser.add_argument('--boundary-val', type=float,
+            help='Generate valleys, instead of ridges')
+    parser.add_argument('--distance-method', choices=DISTANCE_METHODS.keys(), default=next(reversed(DISTANCE_METHODS)),
+            help='Select distance calculation method')
+    parser.add_argument('--multi-layer', nargs='?', type=float, const=True,
+            help='Create multiple layers upto a zoom-level, auto-select if level is skipped (check OGR driver capabilities)')
+    parser.add_argument('--append', action='store_true',
+            help='Append to existing output geometry (do not truncate)')
+    parser.add_argument('--separated-branches', action='store_true',
+            help='Keep each branch-line one pixes away from its parent')
+    parser.add_argument('--smoothen-geometry', action='store_true',
+            help='Smoothen final geometry (avoids the jagged effect, caused by the DEM resolution)')
+    parser.add_argument('--assert-level', choices=range(4), type=int, default=ASSERT_LEVEL,
+            help='Select internal tests complexity (3 - slowest)')
+    parser.add_argument('--keep-snapshots', action='store_true',
+            help='Keep intermediate results between stages')
+    parser.add_argument('--resume-from-snapshot', choices=range(4), type=int, default=0,
+            help='Resume from a stage result stored by "--keep-snapshots"')
+
+    args = parser.parse_args()
+    ASSERT_LEVEL = args.assert_level
+    ret = main(args)
     if ret:
         exit(ret)
