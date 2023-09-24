@@ -8,6 +8,9 @@ try:
 except ImportError as ex:
     print('Warning:', ex, '- geod_distance is unavailable', file=sys.stderr)
 
+# Suppress GDAL 3.7.0 warning
+if getattr(gdal, 'UseExceptions', None):
+    gdal.DontUseExceptions()
 
 #
 # Multi-index array access
@@ -166,7 +169,7 @@ class gdal_dem_band(gdal_dataset):
         if self.nodata_val is not None:
             # Convert 'dem_buf' to float (specifically xform-type) to allow NaN assignment
             if self.dem_buf.dtype.kind != 'f' or not self.dem_buf.flags.writeable:
-                alt_f = numpy.array(self.dem_buf, dtype=self.xform.dtype) 
+                alt_f = numpy.array(self.dem_buf, dtype=self.xform.dtype)
                 alt_f[self.dem_buf == self.nodata_val] = numpy.nan
                 self.dem_buf = alt_f
             else:
@@ -389,8 +392,13 @@ class gdal_vect_layer(gdal_dataset):
 
     def create_field(self, name, ftype=OFTReal):
         fd = ogr.FieldDefn(name, ftype)
-        self.layer.CreateField(fd)
-        return self.layer.FindFieldIndex(name, True)
+        if self.layer.CreateField(fd) != ogr.OGRERR_NONE:
+            return None
+        ret = self.layer.FindFieldIndex(name, True)
+        if ret >= 0:
+            return ret
+        # Guess the index, as field-name must be truncated (esp. with 'ESRI Shapefile')
+        return self.layer.GetLayerDefn().GetFieldCount() - 1
 
     def create_feature_geometry(self, geom_type=None):
         feat = ogr.Feature(feature_def=self.layer.GetLayerDefn())
@@ -447,7 +455,8 @@ def vect_create(filename, drv_name=None, xsize=0, ysize=0, bands=0, options=[]):
         if drv_name is None:
             drv_name = GetOutputDriverFor(filename)
         drv = gdal.GetDriverByName(drv_name)
-        dataset = drv.Create(filename, xsize, ysize, bands, options=options)
+        if drv is not None:
+            dataset = drv.Create(filename, xsize, ysize, bands, options=options)
 
     if dataset is None:
         return None

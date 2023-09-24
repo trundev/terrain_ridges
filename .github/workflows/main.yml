@@ -72,6 +72,7 @@ jobs:
       id: setup-gdal
       with:
         rebuild-cache: ${{ github.event.inputs.REBUILD_CACHE }}
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Install dependencies
       run: |

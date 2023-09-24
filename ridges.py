@@ -458,13 +458,12 @@ def get_zoom_level(spatial_ref, area):
 
 class dst_layer_mgr:
     """Destination layer manager"""
-    layer_set = {}
-
     def __init__(self, dst_ds, spatial_ref, valleys, multi_layer):
         self.dst_ds = dst_ds
         self.spatial_ref = spatial_ref
         self.id_fmt = VECTOR_LAYER_NAME(valleys)
         self.multi_layer = multi_layer
+        self.layer_set = {}
 
     def delete_all(self):
         """Delete all existing layers"""
@@ -483,7 +482,7 @@ class dst_layer_mgr:
             layer_id = self.id_fmt
             layer_options = []
         if layer_id in self.layer_set:
-            return self.layer_set[layer_id]
+            return self.layer_set[layer_id], False
 
         # Add some more layer options
         layer_options += DEF_LAYER_OPTIONS
@@ -497,15 +496,9 @@ class dst_layer_mgr:
                 options=layer_options)
         if dst_layer is None:
             print('Error: Unable to create layer', file=sys.stderr)
-            return None
+            return None, None
         self.layer_set[layer_id] = dst_layer
-
-        # Add fields
-        dst_layer.create_field('Name', gdal_utils.OFTString)    # KML <name>
-        dst_layer.create_field('Description', gdal_utils.OFTString) # KML <description>
-        if FEATURE_OSM_NATURAL:
-            dst_layer.create_field('natural', gdal_utils.OFTString) # OSM "natural" key
-        return dst_layer
+        return dst_layer, True
 
 def filter_mgrid(mgrid_n_xy, start_xy):
     """Keep only points reachable from 'start_xy', invalidate others"""
@@ -710,9 +703,16 @@ def main(args):
                 assert round(branch['area']) == round(ar), 'Accumulated branch coverage area mismatch %.6f / %.6f km2'%(
                         branch['area'] / 1e6, ar / 1e6)
             # Select the layer, where to add the geometry, create if missing
-            dst_layer = layer_mgr.get_layer(branch)
+            dst_layer, is_new = layer_mgr.get_layer(branch)
             if dst_layer is None:
                 return 1
+
+            # Add fields
+            if is_new:
+                name_field = dst_layer.create_field('Name', gdal_utils.OFTString)    # KML <name>
+                desc_field = dst_layer.create_field('Description', gdal_utils.OFTString) # KML <description>
+                if FEATURE_OSM_NATURAL:
+                    natural_field = dst_layer.create_field('natural', gdal_utils.OFTString) # OSM "natural" key
 
             # Advance one step forward to connect to the parent branch
             if not args.separated_branches:
@@ -731,10 +731,10 @@ def main(args):
 
             # Create actual geometry
             geom = dst_layer.create_feature_geometry(gdal_utils.wkbLineString)
-            geom.set_field('Name', '%dm'%dist if dist < 10000 else '%dkm'%round(dist/1000))
-            geom.set_field('Description', 'length: %.1f km, area: %.1f km2'%(dist / 1e3, branch['area'] / 1e6))
+            geom.set_field(name_field, '%dm'%dist if dist < 10000 else '%dkm'%round(dist/1000))
+            geom.set_field(desc_field, 'length: %.1f km, area: %.1f km2'%(dist / 1e3, branch['area'] / 1e6))
             if FEATURE_OSM_NATURAL:
-                geom.set_field('natural', FEATURE_OSM_NATURAL(args.valleys))
+                geom.set_field(natural_field, FEATURE_OSM_NATURAL(args.valleys))
             geom.set_style_string(VECTOR_FEATURE_STYLE(args.valleys))
 
             # Reverse the line to match the tracing direction
