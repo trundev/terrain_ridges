@@ -1,3 +1,5 @@
 GDAL
 numpy
 pyproj
+contourpy
+pytest
