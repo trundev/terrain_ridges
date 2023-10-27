@@ -71,7 +71,8 @@ def figarg_create_lines(lla_grid_list: list[np.array]) -> dict:
     lines_arr = lines_arr.T.reshape(lines_arr.shape[-1], -1)
     return dict(lon=lines_arr[0], lat=lines_arr[1])
 
-def figarg_create_graph_lines(lla_grid: np.array, mgrid: np.array, len_scale: float or None=.8) -> dict:
+def figarg_create_graph_lines(lla_grid: np.array, mgrid: np.array, *,
+        len_scale: float or None=.8, name: str or None=None) -> dict:
     """Create lon/lat kwargs for arrows in a tree-graph"""
     lines_arr = lla_grid[*mgrid]
     # Filter-out zero lines
@@ -85,7 +86,10 @@ def figarg_create_graph_lines(lla_grid: np.array, mgrid: np.array, len_scale: fl
     if len_scale is not None:
         lines_arr = lines_arr * len_scale + bases_arr * (1 - len_scale)
 
-    return figarg_create_lines((bases_arr, lines_arr))
+    kwargs = figarg_create_lines((bases_arr, lines_arr))
+    if name is not None:
+        kwargs['name'] = f'{name} ({np.count_nonzero(mask)})'
+    return kwargs
 
 def figarg_create_mask_polygon(lla_grid: np.array, mask: np.array, *,
         quad_as_tri: bool=False, cut_level: float=.4) -> dict:
@@ -126,6 +130,43 @@ def figarg_create_mask_line(lla_grid: np.array, mask: np.array, *,
     for poly in lines[1:]:
         comb_poly = np.concatenate((comb_poly, np.insert(poly, 0, np.nan, axis=0)))
     return dict(lon=comb_poly[...,0], lat=comb_poly[...,1])
+
+#
+# Slider helper
+#
+class Slider():
+    """Figure slider helper"""
+    fig_data_pos: list[int]
+    fig: go.Figure
+
+    def __init__(self, fig: go.Figure, current_pos: int):
+        self.fig = fig
+        self.fig_data_pos = [len(fig.data)]
+        self.current_pos = current_pos
+
+    def add_slider_pos(self) -> None:
+        """Create a slider position from just added widgets"""
+        self.fig_data_pos.append(len(self.fig.data))
+        # Hide all just created widgets, if NOT at the current position
+        if len(self.fig_data_pos) - 2 != self.current_pos:
+            for scat in self.fig.data[self.fig_data_pos[-2]:]:
+                scat.visible = False
+
+    def update_layout(self) -> None:
+        """Add the slider in figure layout, must call after all widgets are created"""
+        assert len(self.fig_data_pos) > 1, 'Must call after all widgets are created'
+
+        num_steps = len(self.fig_data_pos) - 1
+        visible = np.ones((num_steps, len(self.fig.data)), dtype=object)
+        # Take default visibility, all widgets in figure (bool, None, or 'legendonly')
+        for idx, scat in enumerate(self.fig.data):
+            visible[:, idx] = scat.visible
+        visible[:, self.fig_data_pos[0]:self.fig_data_pos[-1]] = False
+        steps = []
+        for idx in range(num_steps):
+            visible[idx, self.fig_data_pos[idx]:self.fig_data_pos[idx+1]] = True
+            steps.append(dict(method='restyle', args=[{'visible': visible[idx]}], label=f'Layer {idx}'))
+        self.fig.update_layout(sliders=[dict(steps=steps)])
 
 #
 # Direct invocation

@@ -605,8 +605,6 @@ if __name__ == '__main__':
                 tuple(get_node_address(np.stack(main_edge_list, 1), graph_list, lla_grid.shape[:-1]))[::-1])
         main_edge_text = [f'Edge {i}: Node ' for i in range(main_edge_text.shape[-1])] + main_edge_text
         main_edge_text = np.stack(np.broadcast_arrays(*main_edge_text, ''))
-        # Cut graph-layers
-        graph_list = graph_list[:2]
 
     import os.path
     dem_name = os.path.basename(dem_name)
@@ -633,14 +631,13 @@ if __name__ == '__main__':
         yield create_edges(*build_edge_list(lla_grid[...,-1], distance=dist)[:2],
                 name='All edges', mode='lines', visible='legendonly')
         # Main-graph
-        yield visualize.figarg_create_graph_lines(lla_grid, graph_list[0]) | dict(
-                name='Main-graph', mode='lines', visible='legendonly')
+        yield visualize.figarg_create_graph_lines(lla_grid, graph_list[0],
+                name='Main-graph') | dict(mode='lines', visible='legendonly')
 
         # Individual trees inside main-graph
         def create_graphtree_coverage(tree_idx, seed_mask):
             """Figure polygons generation"""
-            id_list = np.arange(tree_idx.max() + 1)
-            for id in id_list:
+            for id in np.arange(tree_idx.max() + 1):
                 mask = tree_idx == id
                 num = np.count_nonzero(mask)
                 if num <= 10:   #TODO: FIXME: Temporarily drop small regions
@@ -650,23 +647,44 @@ if __name__ == '__main__':
                 mask &= seed_mask
                 yield dict(name=f'Seed {id} ({np.count_nonzero(mask)})', mode='lines') | \
                         visualize.figarg_create_mask_line(lla_grid, mask)
-        tree_idx = None
-        for par_nodes in reversed(graph_list):
+        # Trees/seeds for each layer, selected by slider
+        slider = visualize.Slider(fig, 0)   # Current layer is the first-one
+        tree_idx_seed = []
+        # Precache graph-trees (slow operation)
+        for par_nodes in graph_list:
             t_idx, s_mask = isolate_graphtrees(par_nodes)
-            print(f'Processing layer of {par_nodes.shape[-1]} nodes: {t_idx.max()+1} in next, {np.count_nonzero(s_mask)} seeds')
-            if tree_idx is None:
-                tree_idx = t_idx
-                seed_mask = s_mask
-            else:
+            print(f'  Processing layer of {par_nodes[0].size} nodes: {t_idx.max()+1} in next, {np.count_nonzero(s_mask)} seeds')
+            tree_idx_seed.append((t_idx, s_mask))
+        # Generate coverage masks
+        for layer, (tree_idx, seed_mask) in enumerate(tree_idx_seed):
+            print(f'Generating graph-layer {layer}')
+            center_mask = seed_mask
+            for t_idx, s_mask in reversed(tree_idx_seed[:layer]):
                 tree_idx = tree_idx[t_idx]
                 seed_mask = seed_mask[t_idx]
-        for s in create_graphtree_coverage(tree_idx, seed_mask):
-            yield s
+                center_mask = center_mask[t_idx] & s_mask
+            # Visualize links between nodes (upper layer graph)
+            if layer + 1 < len(graph_list):
+                par_nodes = graph_list[layer + 1]
+                lla_layer = np.full_like(lla_grid, np.nan, shape=par_nodes.shape[1:] + lla_grid.shape[-1:])
+                for id in np.ndindex(par_nodes.shape[1:]):
+                    lla_layer[*id] = lla_grid[(tree_idx == id) & center_mask].mean(0)
+                yield visualize.figarg_create_graph_lines(lla_layer, par_nodes, len_scale=1,
+                        name=f'Graph layer {layer + 1}') | dict(mode='lines+markers')
+            # Visualize coverage of layer nodes
+            for s in create_graphtree_coverage(tree_idx, seed_mask):
+                yield s
+            slider.add_slider_pos()
+        del tree_idx_seed
+
         # Separate main-edges by the layer, where are in use
         if main_edge_list:
             for lay in range(main_edge_layer.max()+1):
                 mask = main_edge_layer == lay
                 yield create_edges(main_edge_list[0][:, mask], main_edge_list[1][:, mask],
                         name=f'Main-edges {lay}', mode='lines+markers', text=main_edge_text[:, mask].T.flat)
+
+        # Create the slider
+        slider.update_layout()
 
     visualize.figure_show(lla_grid, figarg_gen)
