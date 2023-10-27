@@ -277,7 +277,7 @@ def build_graph_layers(alt_grid: np.array, *, distance: callable or None=None, m
             np.ravel_multi_index(neighbor_idx, alt_grid.shape)))
     del base_idx, neighbor_idx
     np.testing.assert_equal(np.nonzero(main_edge_list == np.argmax(alt_grid))[0], 1,
-            'The higest point was found at base-side of an edge')
+            'The highest point was found at base-side of an edge')
     print(f'Build-graph starts with {main_edge_list.shape[-1]} edges')
 
     #
@@ -533,8 +533,6 @@ if __name__ == '__main__':
                 tuple(get_node_address(np.stack(main_edge_list, 1), graph_list, lla_grid.shape[:-1]))[::-1])
         main_edge_text = [f'Edge {i}: Node ' for i in range(main_edge_text.shape[-1])] + main_edge_text
         main_edge_text = np.stack(np.broadcast_arrays(*main_edge_text, ''))
-        # Cut graph-layers
-        graph_list = graph_list[:2]
 
     import os.path
     dem_name = os.path.basename(dem_name)
@@ -578,23 +576,48 @@ if __name__ == '__main__':
                 mask &= seed_mask
                 yield dict(name=f'Seed {id} ({np.count_nonzero(mask)})', mode='lines') | \
                         visualize.figarg_create_mask_line(lla_grid, mask)
-        tree_idx = None
-        for par_nodes in reversed(graph_list):
+        # Trees/seeds for each layer, selected by slider
+        current_layer = 0
+        layer_slider_pos = [len(fig.data)]
+        tree_idx_seed = []
+        # Precache graph-trees (slow operation)
+        for par_nodes in graph_list:
             t_idx, s_mask = isolate_graphtrees(par_nodes)
-            print(f'Processing layer of {par_nodes.shape[-1]} nodes: {t_idx.max()+1} in next, {np.count_nonzero(s_mask)} seeds')
-            if tree_idx is None:
-                tree_idx = t_idx
-                seed_mask = s_mask
-            else:
+            print(f'  Processing layer of {par_nodes[0].size} nodes: {t_idx.max()+1} in next, {np.count_nonzero(s_mask)} seeds')
+            tree_idx_seed.append((t_idx, s_mask))
+        # Generate coverage masks
+        for layer, (tree_idx, seed_mask) in enumerate(tree_idx_seed):
+            print(f'Generating graph-layer {layer}')
+            for t_idx, s_mask in reversed(tree_idx_seed[:layer]):
                 tree_idx = tree_idx[t_idx]
                 seed_mask = seed_mask[t_idx]
-        for s in create_graphtree_coverage(tree_idx, seed_mask):
-            yield s
+            for s in create_graphtree_coverage(tree_idx, seed_mask):
+                yield s
+            # Force default slider position
+            layer_slider_pos.append(len(fig.data))
+            if layer != current_layer:
+                for scat in fig.data[layer_slider_pos[-2]:layer_slider_pos[-1]]:
+                    scat.visible = False
+        del tree_idx_seed
+
         # Separate main-edges by the layer, where are in use
         if main_edge_list:
             for lay in range(main_edge_layer.max()+1):
                 mask = main_edge_layer == lay
                 yield create_edges(main_edge_list[0][:, mask], main_edge_list[1][:, mask],
                         name=f'Main-edges {lay}', mode='lines+markers', text=main_edge_text[:, mask].T.flat)
+
+        # Experimental layout slider
+        num_steps = len(layer_slider_pos)-1
+        visible = np.ones((num_steps, len(fig.data)), dtype=object)
+        # Take default visibility
+        for idx, scat in enumerate(fig.data):
+            visible[:, idx] = scat.visible
+        visible[:, layer_slider_pos[0]:layer_slider_pos[-1]] = False
+        steps = []
+        for idx in range(num_steps):
+            visible[idx, layer_slider_pos[idx]:layer_slider_pos[idx+1]] = True
+            steps.append(dict(method='restyle', args=[{'visible': visible[idx]}], label=f'Layer {idx}'))
+        fig.update_layout(sliders=[dict(steps=steps)])
 
     visualize.figure_show(lla_grid, figarg_gen)
