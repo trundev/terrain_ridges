@@ -11,6 +11,8 @@ import numpy as np
 LAYER0_MIN_WEIGHT = 10
 EDGE_REUSE = True
 
+EDGLE_LIST_DTYPE = [('edge', int, 2), ('is_base', bool, 2), ('layer', int)]
+#EDGLE_LIST_DTYPE += [('sort_keys', float, 2)]
 
 @dataclass
 class Node:
@@ -290,9 +292,12 @@ def build_graph_layers(alt_grid: np.array, *, distance: callable or None=None, m
     # Build each graph layers from previous, start from main-graph
     # (main-edges uses "masked_array.mask" to track "used" entries)
     #
-    edge_list = main_edge_list
-    main_edge_list = np.ma.array(main_edge_list, mask=False)
-    main_edge_layer = np.full(main_edge_list.shape[-1], -1)
+    edge_list = np.empty(shape=main_edge_list.shape[-1], dtype=EDGLE_LIST_DTYPE)
+    edge_list['edge'] = main_edge_list.T
+    edge_list['is_base'] = False
+    edge_list['layer'] = -1
+    main_edge_list = edge_list
+    edge_list = main_edge_list['edge'].T
     graph_list = []
     for layer in range(max_layers):
         #
@@ -301,9 +306,9 @@ def build_graph_layers(alt_grid: np.array, *, distance: callable or None=None, m
         node_mask = node_weight < LAYER0_MIN_WEIGHT * 4**layer
         par_nodes, edge_base_mask = edge_list_to_graph(edge_list, node_mask=node_mask)
         # Update 'main_edge_layer'
-        mask = ~main_edge_list.mask.any(0)
+        mask = ~main_edge_list['is_base'].any(-1)
         mask[mask] = edge_base_mask.any(0)
-        main_edge_layer[mask] = layer
+        main_edge_list['layer'][mask] = layer
         if False:   #TODO: Create 'par_edge_idx' with actual indices from 'edge_main_idx'
             par_edge_idx = np.full((2, par_nodes.shape[-1]), -1)
             mask = par_nodes[0] != np.arange(par_nodes[0].size)     # Drop self-pointing nodes
@@ -315,9 +320,9 @@ def build_graph_layers(alt_grid: np.array, *, distance: callable or None=None, m
                     par_nodes[0, mask], 'Wrong "par_edge_idx"')
         # Confirm the 'main_edge_list' vs. 'graph_list' consistency
         if True:    #TODO: CHECKME: slow assert operation
-            mask = ~main_edge_list.mask.any(0)
+            mask = ~main_edge_list['is_base'].any(-1)
             mask[mask] = edge_base_mask.any(0)
-            *_, bn_idx = get_node_address(main_edge_list.data[:, mask], graph_list)
+            *_, bn_idx = get_node_address(main_edge_list['edge'][mask].T, graph_list)
             mask = edge_base_mask[:, edge_base_mask.any(0)]     # Cut 'edge_base_mask' to 'bn_idx' shape
             assert np.unique(bn_idx[mask]).size == bn_idx[mask].size, 'Edge base-nodes are NOT unique in current layer'
             np.testing.assert_equal(par_nodes[0, bn_idx[mask]], bn_idx[::-1][mask], 'Base-neighbor nodes do NOT match the graph')
@@ -327,7 +332,7 @@ def build_graph_layers(alt_grid: np.array, *, distance: callable or None=None, m
         # In first iteration this is NOT done, in order these to be dropped (become internal)
         #
         if layer > 0:
-            main_edge_list.mask[:, ~main_edge_list.mask.any(0)] = edge_base_mask
+            main_edge_list['is_base'][~main_edge_list['is_base'].any(-1), :] = edge_base_mask.T
             edge_list = edge_list[:, ~edge_base_mask.any(0)]
         del edge_base_mask
 
@@ -361,20 +366,21 @@ def build_graph_layers(alt_grid: np.array, *, distance: callable or None=None, m
         # Drop selected edges
         edge_list = edge_list[:, edge_mask]
         # Also from main-edges, the "used" ones remain (if they were removed from 'edge_list')
-        mask = main_edge_list.mask.any(0)
+        mask = main_edge_list['is_base'].any(-1)
         mask[~mask] = edge_mask
-        main_edge_list = main_edge_list[:, mask]
-        main_edge_layer = main_edge_layer[mask]
+        main_edge_list = main_edge_list[mask]
 
         graph_list.append(par_nodes)
 
     # The main edge-list and graph must be unravelled, other graphs remain 1D
-    main_edge_list = np.asarray(np.unravel_index(main_edge_list, alt_grid.shape))
+    main_edge_layer = main_edge_list['layer']
+    main_edge_is_base = main_edge_list['is_base'].T
+    main_edge_list = np.asarray(np.unravel_index(main_edge_list['edge'].T, alt_grid.shape))
     # The 'par_nodes' are coming from ravel_multi_index(), so use 'strict_unravel'
     graph_list[0] = reshape_graph(graph_list[0], alt_grid.shape, strict_unravel=True)
 
     print(f'Build-graph ends with {main_edge_list.shape[-1]} edges')
-    return (main_edge_list[:, 0], main_edge_list[:, 1]), graph_list
+    return (main_edge_list[:, 0], main_edge_list[:, 1], main_edge_is_base, main_edge_layer), graph_list
 
 #
 #TODO: Move to pytest
@@ -526,11 +532,17 @@ if __name__ == '__main__':
             dist = lambda b,n: distance.get_distance(b.T, n.T, flat=True).T
         main_edge_list, graph_list = build_graph_layers(lla_grid[...,-1], distance=dist)
         # Keep layers where each edge is used
-        main_edge_layer = find_main_edge_layer(np.stack(main_edge_list, 1), graph_list, lla_grid.shape[:-1])
+        main_edge_layer = main_edge_list[-1]
+        if True:    #TODO: Slow assert
+            edge_layer = find_main_edge_layer(np.stack(main_edge_list[:2], 1), graph_list, lla_grid.shape[:-1])
+            np.testing.assert_equal(main_edge_layer[main_edge_layer >= 0],
+                    edge_layer[edge_layer < len(graph_list)],
+                    'Recalculated edge layers from find_main_edge_layer() do not match the ones from build_graph_layers()')
+            del edge_layer
         # Combine node-addresses
         main_edge_text = np.apply_along_axis(
                 lambda adr: np.asarray('.'.join(map(str, adr)), dtype=object), 0,
-                tuple(get_node_address(np.stack(main_edge_list, 1), graph_list, lla_grid.shape[:-1]))[::-1])
+                tuple(get_node_address(np.stack(main_edge_list[:2], 1), graph_list, lla_grid.shape[:-1]))[::-1])
         main_edge_text = [f'Edge {i}: Node ' for i in range(main_edge_text.shape[-1])] + main_edge_text
         main_edge_text = np.stack(np.broadcast_arrays(*main_edge_text, ''))
 
@@ -602,7 +614,7 @@ if __name__ == '__main__':
 
         # Separate main-edges by the layer, where are in use
         if main_edge_list:
-            for lay in range(main_edge_layer.max()+1):
+            for lay in range(main_edge_layer.min(), main_edge_layer.max()+1):
                 mask = main_edge_layer == lay
                 yield create_edges(main_edge_list[0][:, mask], main_edge_list[1][:, mask],
                         name=f'Main-edges {lay}', mode='lines+markers', text=main_edge_text[:, mask].T.flat)
