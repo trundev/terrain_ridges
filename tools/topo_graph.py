@@ -382,6 +382,73 @@ def build_graph_layers(alt_grid: np.array, *, distance: callable or None=None, m
     print(f'Build-graph ends with {main_edge_list.shape[-1]} edges')
     return (main_edge_list[:, 0], main_edge_list[:, 1], main_edge_is_base, main_edge_layer), graph_list
 
+####Experimental
+def find_edge(edge_list: np.array, edge_is_base: np.array, base_node, neighbor_node=None):
+    """Find edge between neighbor graph-nodes in 1D edge-list"""
+    assert edge_list.shape[:-1] == (2,), 'edge-list must be 1D (ravelled)'
+    mask = edge_list[edge_is_base] == np.asarray(base_node)[...,np.newaxis]
+    np.testing.assert_equal(mask.sum(-1), 1, 'Base edge not found or not unique')
+    argmax = np.argmax(mask, axis=-1)
+    swap, idx = np.asarray(np.nonzero(edge_is_base))[:, *argmax]
+    if neighbor_node is not None:
+        np.testing.assert_equal(edge_list[::-1][swap, idx], neighbor_node, 'Edge neighbor node do not match expected one')
+    if False:   # Do not use edge_is_base
+        # Move smallest node-index in-front to make <a>-<b> and <b>-<a> the same
+        nodes = np.sort(np.asarray((base_node, neighbor_node)), axis=0)
+        edges = np.sort(np.asarray(edge_list), axis=0)
+        mask = (edges == nodes.T[...,np.newaxis]).all((-3, -2))
+        assert mask.any(-1).all(), f'Node-couple {np.nonzero(~mask.any(-1))[0]} was not found in any edged'
+        argmax = np.argmax(mask, axis=-1)
+        #return argmax, edge_list[0, argmax] != base_node[0]
+    return idx, swap.astype(bool)
+
+def trace_parent_link(node: np.array, main_edge_list: tuple[np.array], graph_list: list[np.array]) -> np.array:
+    """Trace single edge between two nodes at layer 0"""
+    main_edge_is_base = main_edge_list[-2]
+    main_edge_layer = main_edge_list[-1]
+    main_edge_list = np.stack(main_edge_list[:2], axis=1)
+    main_edge_addrs = tuple(get_node_address(main_edge_list, graph_list[:-1], graph_list[0].shape[1:]))
+
+    def trace_edge_link(node: np.array, layer: int):
+        """Trace single edge between two nodes at layer 0 (internal)"""
+        mask = main_edge_layer == layer
+        edge_list = main_edge_addrs[layer][:, mask]
+        edge_is_base = main_edge_is_base[:, mask]
+        next_node = graph_list[layer][:, *node]
+        idx, swap = find_edge(edge_list, edge_is_base, node, next_node)
+
+        # The line's middle point
+        idx = np.nonzero(mask)[0][idx]
+        line = main_edge_list[..., idx]
+        line[swap] = line[swap][..., ::-1]
+        nodes = line
+
+        for lyr in range(layer):
+            par_nodes = graph_list[lyr]
+            _, seed_mask = isolate_graphtrees(par_nodes)
+            if lyr > 0:
+                nodes = main_edge_addrs[lyr][np.newaxis, :, idx].copy() # Swap the temp-copy only
+                nodes[swap] = nodes[swap][..., ::-1]
+            # Trace first end-side, then start-side
+            line = expand_line(line, nodes[..., -1], lyr, par_nodes, seed_mask)
+            line = expand_line(line[..., ::-1], nodes[..., 0], lyr, par_nodes, seed_mask)[..., ::-1]
+        return line
+
+    def expand_line(line: np.array, node: np.array, layer: int, par_nodes: np.array, seed_mask: np.array):
+        """Expand line, from its last-point, till reaching a seed"""
+        while not seed_mask[*node]:
+            if layer > 0:
+                points = trace_edge_link(node, layer)
+                node = par_nodes[:, *node]
+            else:
+                node = par_nodes[:, *node]
+                points = node[..., np.newaxis]
+            line = np.concatenate((line, points), axis=-1)
+        return line
+
+    return trace_edge_link(node, len(graph_list) - 1)
+###
+
 #
 #TODO: Move to pytest
 #
@@ -573,6 +640,19 @@ if __name__ == '__main__':
         # Main-graph
         yield visualize.figarg_create_graph_lines(lla_grid, graph_list[0]) | dict(
                 name='Main-graph', mode='lines', visible='legendonly')
+###Experimental
+        if main_edge_list:
+            layer = len(graph_list) - 1
+            if True:    # Single node
+                node = [2]
+            else:   # All base nodes in specific layer
+                node = np.arange(graph_list[layer].shape[-1])
+                mask = (graph_list[layer] != node).any(0)
+                node = node[np.newaxis, mask]
+            line_arr = trace_parent_link(node, main_edge_list, graph_list[:layer + 1])
+            line_arr = lla_grid[*line_arr]
+            yield visualize.figarg_create_lines(line_arr) | dict(name=f'Layer {layer} node {node} (len {line_arr.shape[0]})', mode='lines+markers')
+###
 
         # Individual trees inside main-graph
         def create_graphtree_coverage(tree_idx, seed_mask):
