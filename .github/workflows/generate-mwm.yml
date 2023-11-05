@@ -1,0 +1,291 @@
+name: Organic Maps MWM generator
+
+on:
+  workflow_dispatch:
+    inputs:
+      SRC_URL:
+        description: "URL(s) to download source OGR"
+        required: true
+        default: ""
+        type: string
+      UNPACK_SRC:
+        description: "The source OGR is inside an archive (zipped)"
+        required: false
+        default: false
+        type: boolean
+      omim-version:
+        description: "The Organic Maps version to build map for"
+        default: "2025.03.02-7-android"
+        required: false
+        type: string
+      MAPS_GENERATOR_OPTS:
+        description: "Specify command-line options for maps_generator tool"
+        required: false
+        default: '--without_countries=World --skip=Coastline'
+        type: string
+      OMIM_STYLE_PATCH:
+        description: "Git-patch to modify the original Organic Maps styles"
+        required: false
+        default: "omim_patch/0001-Terrain-ridge-style-using-size-tag-2025.03.02.patch"
+        type: string
+
+env:
+  DST_EXT: ".mwm"
+  WORK_DIR: ${{ github.workspace }}/tools/mwm_generator
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+
+    env:
+      TMP_OGR_DIR: "OGR"
+      TMP_PLANET_OSM: "tmp_planet~.osm"
+
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: ${{ env.WORK_DIR }}
+
+    steps:
+    - uses: actions/checkout@v4
+
+    #
+    # First download the soure file(s) to avoid later failures
+    #
+    - name: Download source OGRs
+      id: download-ogr
+      uses: ./.github/download-data
+      with:
+        source-urls: ${{ inputs.SRC_URL }}
+        unpack-sources: ${{ inputs.UNPACK_SRC }}
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    #
+    # Setup Organic Maps generator related tools
+    #
+    - name: Set up Python 3.13
+      id: setup-python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.13'
+
+    - name: Cache Organic Maps tools
+      uses: actions/cache@v4
+      id: omim-cache
+      with:
+        path: |
+          ${{ env.WORK_DIR }}/omim-build-release/*_tool
+          ${{ env.WORK_DIR }}/osmctools
+        key: OMIM-${{ inputs.omim-version }}
+
+    - name: "[OMIM] Install prerequisites"
+      # See https://github.com/organicmaps/organicmaps/blob/master/docs/INSTALL.md#linux-or-macos
+      run: |
+        sudo apt-get update
+        # QT6 for versions after 2023.07.13-10-android
+        sudo apt-get install -y `
+            qt6-base-dev `
+            qt6-positioning-dev `
+            libfreetype-dev `
+            libglvnd-dev `
+            libgl1-mesa-dev `
+            libharfbuzz-dev `
+            libicu-dev `
+            libqt6svg6-dev `
+            libqt6positioning6-plugins `
+            libqt6positioning6
+        #HACK: Replace the preinstalled cmake=4.0, to workaround:
+        #   Compatibility with CMake < 3.5 has been removed from CMake.
+        sudo apt-get install -y cmake
+
+    - name: "[OMIM] Clone Organic Maps ${{ inputs.omim-version }}"
+      uses: actions/checkout@v4
+      with:
+        repository: organicmaps/organicmaps
+        ref: ${{ inputs.omim-version }}
+        path: ${{ env.WORK_DIR }}/omim
+        # Submodules are needed to build the "generator_tool", otherwise only "data" folder
+        submodules: ${{ steps.omim-cache.outputs.cache-hit != 'true' && 'recursive' || 'false' }}
+
+    - name: "[OMIM] Build the generator_tool binary"
+      if: steps.omim-cache.outputs.cache-hit != 'true'
+      # See https://github.com/organicmaps/organicmaps/blob/master/tools/python/maps_generator/README.md#setup
+      working-directory: ${{ env.WORK_DIR }}/omim
+      run: |
+        ./configure.sh
+        ./tools/unix/build_omim.sh -r generator_tool
+        ./tools/unix/build_omim.sh -r world_roads_builder_tool
+        ./tools/unix/build_omim.sh -r mwm_diff_tool
+
+    - name: "[OMIM] Install python dependencies"
+      working-directory: ${{ env.WORK_DIR }}/omim/tools/python/maps_generator
+      run: |
+        pip3 install -r requirements_dev.txt
+        if ($LASTEXITCODE) {exit $LASTEXITCODE}
+        # Do not install "osmctools", which will build it from cloned sources
+        #sudo apt-get install -y osmctools
+
+    - name: "[OMIM] Update style"
+      if: inputs.OMIM_STYLE_PATCH
+      working-directory: ${{ env.WORK_DIR }}/omim
+      run: |
+        echo "# Apply the patch, check result"
+        ForEach ($patch in "${{ inputs.OMIM_STYLE_PATCH }}".Split(",").Trim()) {
+          git apply "${{ env.WORK_DIR }}/$patch"
+          if ($LASTEXITCODE) {exit $LASTEXITCODE}
+        }
+        git status
+
+        echo "# Install generate_drules.sh prerequisites"
+        git submodule update --init --depth=1 tools/kothic
+        pip3 install "protobuf<4"
+
+        echo "# Regenerate Organic Maps style"
+        ./tools/unix/generate_drules.sh
+
+    - name: "[OMIM] Upload generated 'drules_proto' styles"
+      uses: actions/upload-artifact@v4
+      if: inputs.OMIM_STYLE_PATCH
+      with:
+        name: "drules_proto-${{ inputs.omim-version }}"
+        path: ${{ env.WORK_DIR }}/omim/data/drules_proto*.*
+
+    #
+    # Setup GDAL and other tools
+    #
+    - name: Set up GDAL
+      uses: trundev/setup-gdal@main
+      id: setup-gdal
+      with:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Initial job summary
+      run: |
+        "### Inputs
+        - SRC_URL: ${{ inputs.SRC_URL }}
+        - UNPACK_SRC: ${{ inputs.UNPACK_SRC }}
+        - omim-version: ${{ inputs.omim-version }}
+        - MAPS_GENERATOR_OPTS: ${{ inputs.MAPS_GENERATOR_OPTS }}
+        - OMIM_STYLE_PATCH: ${{ inputs.OMIM_STYLE_PATCH }}
+        " >> $env:GITHUB_STEP_SUMMARY
+
+        "<details><summary>Installed packages</summary>
+
+          | Package  | Version |
+          |----------|---------|
+        $(pip freeze | ForEach-Object {
+          "  | $($_ -replace '==', ' | ' -replace ' @ ', ' | ') |"} |
+          Join-String -Separator "`n")
+        </details>
+        " >> $env:GITHUB_STEP_SUMMARY
+
+        '<details><summary>Organic Maps version</summary>
+
+        ```' >> $env:GITHUB_STEP_SUMMARY
+        omim/tools/unix/version.sh >> $env:GITHUB_STEP_SUMMARY
+        $LASTEXITCODE=0   # Ignore exit code from version.sh"
+        '```
+        </details>
+        ' >> $env:GITHUB_STEP_SUMMARY
+
+    #
+    # Generate .osm/.pbf, then .mwm
+    #
+    - name: Convert ${{ steps.download-ogr.outputs.source-names }} to OSM
+      run: |
+        $TMP_OSM = @()
+        ForEach ($ogr in "${{ steps.download-ogr.outputs.download-paths }}".Split(",")) {
+          $ogr = Get-Item $ogr
+          if ($ogr.Extension -eq ".osm" -or $ogr.Name.EndsWith(".osm.pbf")) {
+            $osm = $ogr
+            echo "Skip OSM conversion for $ogr"
+          } else {
+            $osm = "$ogr.osm"
+
+            echo "Converting OGR file $ogr to $osm..."
+            python -m ogr2osm $ogr -o $osm --positive-id -t ogr2osm_translation-hack.py
+            if ($LASTEXITCODE) {exit $LASTEXITCODE}
+          }
+
+          md5sum $osm > "$osm.md5"
+          $TMP_OSM += Get-Item $osm
+        }
+        $TMP_OSM_NAME = $TMP_OSM.Name -join ","
+        $TMP_OSM = $TMP_OSM -join ","
+
+        echo "TMP_OSM=$TMP_OSM" >> ${env:GITHUB_ENV}
+        echo "TMP_OSM_NAME=$TMP_OSM_NAME" >> ${env:GITHUB_ENV}
+        echo "TMP_OSM set to $TMP_OSM"
+        echo "TMP_OSM_NAME set to $TMP_OSM_NAME"
+
+    - name: "Create Organic Maps configuration file"
+      working-directory: ${{ env.WORK_DIR }}/omim/tools/python/maps_generator
+      shell: python
+      run: |
+        in_file = 'var/etc/map_generator.ini.default'
+        out_file = 'var/etc/map_generator.ini'
+
+        import configparser
+        print(f'Reading configuration from "{in_file}"')
+        config = configparser.ConfigParser(interpolation=configparser.ExtendedInterpolation())
+        config.optionxform = str    # Case-sensitive, preserve case
+        config.read(in_file)
+
+        print(f'Updating configuration values...')
+
+        config["Developer"]["OMIM_PATH"] = '${{ env.WORK_DIR }}/omim'
+        config["Developer"]["BUILD_PATH"] = '${{ env.WORK_DIR }}/omim-build-release'
+        config["Main"]["MAIN_OUT_PATH"] = '${{ env.WORK_DIR }}/maps_build'
+        print(f'  Developer:OMIM_PATH={config["Developer"]["OMIM_PATH"]}')
+        print(f'  Developer:BUILD_PATH={config["Developer"]["BUILD_PATH"]}')
+        print(f'  Main:MAIN_OUT_PATH={config["Main"]["MAIN_OUT_PATH"]}')
+
+        config["Main"]["DEBUG"] = '0'
+        print(f'  Main:DEBUG={config["Main"]["DEBUG"]}')
+
+        config["External"]["PLANET_URL"] = 'file://${{ runner.temp }}/${{ env.TMP_PLANET_OSM }}'
+        config["External"]["PLANET_MD5_URL"] = 'file://${{ runner.temp }}/${{ env.TMP_PLANET_OSM }}.md5'
+        print(f'  External:PLANET_URL={config["External"]["PLANET_URL"]}')
+        print(f'  External:PLANET_MD5_URL={config["External"]["PLANET_MD5_URL"]}')
+
+        print(f'Writting configuration to "{out_file}"')
+        with open(out_file, 'w') as configfile:
+          config.write(configfile)
+
+    - name: Select DST_NAME
+      run: |
+        $SRC_OGR = Get-Item "${{ steps.download-ogr.outputs.download-paths }}".Split(",")
+        $DST_NAME = [System.IO.Path]::ChangeExtension($SRC_OGR[0].Name, "${{ env.DST_EXT }}")
+        echo "DST_NAME=$DST_NAME" >> ${env:GITHUB_ENV}
+        echo "DST_NAME set to $DST_NAME"
+
+    - name: Generate MWM from ${{ env.TMP_OSM_NAME }}
+      working-directory: ${{ env.WORK_DIR }}/omim/tools/python
+      run: |
+        #HACK: Run "generator_tool" once to create '~/.config/OMaps' and prevent later exception:
+        # https://github.com/organicmaps/organicmaps/blob/2023.09.22-27-android/platform/platform_linux.cpp#L92
+        # The exception is possibly because of multiple process-instances are trying to create the same folder
+        ${{ env.WORK_DIR }}/omim-build-release/generator_tool --version
+
+        ForEach ($osm in "${{ env.TMP_OSM }}".Split(",")) {
+          Copy-Item -Force $osm "${{ runner.temp }}/${{ env.TMP_PLANET_OSM }}"
+          Copy-Item -Force "$osm.md5" "${{ runner.temp }}/${{ env.TMP_PLANET_OSM }}.md5"
+
+          echo "# Generating MWM from $osm..."
+          python -m maps_generator ${{ inputs.MAPS_GENERATOR_OPTS }}
+          if ($LASTEXITCODE) {exit $LASTEXITCODE}
+        }
+
+    - uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: ${{ env.DST_NAME }}
+        path: |
+          ${{ env.WORK_DIR }}/maps_build/*/*/*${{ env.DST_EXT }}
+          ${{ env.WORK_DIR }}/maps_build/*/logs
+          ${{ env.WORK_DIR }}/maps_build/generation.log

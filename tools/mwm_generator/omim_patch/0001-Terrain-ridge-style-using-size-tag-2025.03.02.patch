@@ -1,0 +1,215 @@
+From 6d4c0d0e81bc7e901d2ed5dff7051dad29dcd9b3 Mon Sep 17 00:00:00 2001
+From: Todor Trundev <trundev@gmail.com>
+Date: Thu, 3 Apr 2025 10:43:11 +0300
+Subject: [PATCH 1/1] Terrain ridge style using [size] tag
+
+Use an explicitly enumerated [size=<l>] property to separate ridges
+[natural=ridge] by extent.
+---
+ data/mapcss-mapping.csv                       |  9 +++++
+ data/styles/default/dark/colors.mapcss        |  6 +++
+ data/styles/default/include/Basemap.mapcss    | 39 +++++++++++++++++++
+ .../default/include/priorities_3_FG.prio.txt  | 18 +++++++++
+ .../include/priorities_4_overlays.prio.txt    |  9 +++++
+ data/styles/default/light/colors.mapcss       |  6 +++
+ .../outdoors/include/priorities_3_FG.prio.txt | 18 +++++++++
+ .../include/priorities_4_overlays.prio.txt    |  9 +++++
+ 8 files changed, 114 insertions(+)
+
+diff --git a/data/mapcss-mapping.csv b/data/mapcss-mapping.csv
+index 35b77b7c..4526af1e 100644
+--- a/data/mapcss-mapping.csv
++++ b/data/mapcss-mapping.csv
+@@ -1741,3 +1741,12 @@ railway|station|light_rail|berlin;[railway=station][station=light_rail][city=ber
+ railway|station|subway|shenzhen;[railway=station][transport=subway][city=shenzhen],[railway=station][station=subway][city=shenzhen];;name;int_name;1620;
+ railway|subway_entrance|shenzhen;[railway=subway_entrance][city=shenzhen];;name;int_name;1621;
+ shop|hearing_aids;1622;
++natural|ridge|size|6;[natural=ridge][size=6],[natural=ridge][size=5],[natural=ridge][size=4],[natural=ridge][size=3],[natural=ridge][size=2],[natural=ridge][size=1];;name;int_name;1623;
++natural|ridge|size|7;[natural=ridge][size=7];;name;int_name;1624;
++natural|ridge|size|8;[natural=ridge][size=8];;name;int_name;1625;
++natural|ridge|size|9;[natural=ridge][size=9];;name;int_name;1626;
++natural|ridge|size|10;[natural=ridge][size=10];;name;int_name;1627;
++natural|ridge|size|11;[natural=ridge][size=11];;name;int_name;1628;
++natural|ridge|size|12;[natural=ridge][size=12];;name;int_name;1629;
++natural|ridge|size|13;[natural=ridge][size=13];;name;int_name;1630;
++natural|ridge|size|14;[natural=ridge][size=14];;name;int_name;1631;
+diff --git a/data/styles/default/dark/colors.mapcss b/data/styles/default/dark/colors.mapcss
+index 5271f707..cf5b821d 100644
+--- a/data/styles/default/dark/colors.mapcss
++++ b/data/styles/default/dark/colors.mapcss
+@@ -206,3 +206,9 @@
+ @label_isoline100: #496149;
+ @label_isoline50: #496149;
+ @label_isoline10: #496149;
++
++/* 7.x.TERRAIN RIDGES COLORS */
++
++@ridge: #C20000;
++@ridge_casing: darkgrey;
++@label_ridge: #720808;
+diff --git a/data/styles/default/include/Basemap.mapcss b/data/styles/default/include/Basemap.mapcss
+index b5b20ce5..3bda2cfa 100644
+--- a/data/styles/default/include/Basemap.mapcss
++++ b/data/styles/default/include/Basemap.mapcss
+@@ -714,3 +714,42 @@ line|z18-[isoline=step_50],
+ line|z18-[isoline=zero],
+ line|z18-[isoline=step_10],
+ {width: 0.8; opacity: 0.4;}
++
++/* 9.x TERRAIN RIDGES */
++/* width is <z> - <size> */
++
++line|z10[natural=ridge][size=10],
++line|z11[natural=ridge][size=11],
++line|z12[natural=ridge][size=12],
++line|z13[natural=ridge][size=13],
++line|z14[natural=ridge][size=14],
++{color: @ridge;width: .5;opacity: 0.8;dashes: 10,5;}
++line|z10[natural=ridge][size=9],
++line|z11[natural=ridge][size=10],
++line|z12[natural=ridge][size=11],
++line|z13[natural=ridge][size=12],
++line|z14[natural=ridge][size=13],
++line|z15-[natural=ridge][size=14],
++{color: @ridge;width: 1;opacity: 0.8;}
++line|z9[natural=ridge][size=7],
++line|z10[natural=ridge][size=8],
++line|z11[natural=ridge][size=9],
++line|z12[natural=ridge][size=10],
++line|z13[natural=ridge][size=11],
++line|z14[natural=ridge][size=12],
++line|z15-[natural=ridge][size=13],
++{
++  color: @ridge;width: 2;opacity: 0.8;
++  text:name;font-size: 9;fill-opacity: 0.7;text-color: @label_ridge;text-position: line;
++}
++line|z9-[natural=ridge][size<=6],
++line|z10-[natural=ridge][size=7],
++line|z11-[natural=ridge][size=8],
++line|z12-[natural=ridge][size=9],
++line|z13-[natural=ridge][size=10],
++line|z14-[natural=ridge][size=11],
++line|z15-[natural=ridge][size=12],
++{
++  color: @ridge;width: 3;opacity: 0.8;casing-width: 1;casing-color: @ridge_casing;
++  text:name;font-size: 9;fill-opacity: 0.7;text-color: @label_ridge;text-position: line;
++}
+diff --git a/data/styles/default/include/priorities_3_FG.prio.txt b/data/styles/default/include/priorities_3_FG.prio.txt
+index 2193f09b..f6312cb2 100644
+--- a/data/styles/default/include/priorities_3_FG.prio.txt
++++ b/data/styles/default/include/priorities_3_FG.prio.txt
+@@ -442,8 +442,26 @@ isoline-step_1000                                   # line z11- (also has pathte
+ isoline-step_50                                     # line z14- (also has pathtext z16-)
+ isoline-step_500                                    # line z11- (also has pathtext z12-)
+ isoline-zero                                        # line z15- (also has pathtext z17-)
++natural-ridge-size-10                               # line z10- (also has line(casing) z13-, pathtext z12-)
++natural-ridge-size-11                               # line z11- (also has line(casing) z14-, pathtext z13-)
++natural-ridge-size-12                               # line z12- (also has line(casing) z15-, pathtext z14-)
++natural-ridge-size-13                               # line z13- (also has pathtext z15-)
++natural-ridge-size-14                               # line z14-
++natural-ridge-size-6                                # line z9- (also has line(casing) z9-, pathtext z9-)
++natural-ridge-size-7                                # line z9- (also has line(casing) z10-, pathtext z9-)
++natural-ridge-size-8                                # line z10- (also has line(casing) z11-, pathtext z10-)
++natural-ridge-size-9                                # line z10- (also has line(casing) z12-, pathtext z11-)
+ === 60
+ 
++# natural-ridge-size-10                             # line(casing) z13- (also has line z10-, pathtext z12-)
++# natural-ridge-size-11                             # line(casing) z14- (also has line z11-, pathtext z13-)
++# natural-ridge-size-12                             # line(casing) z15- (also has line z12-, pathtext z14-)
++# natural-ridge-size-6                              # line(casing) z9- (also has line z9-, pathtext z9-)
++# natural-ridge-size-7                              # line(casing) z10- (also has line z9-, pathtext z9-)
++# natural-ridge-size-8                              # line(casing) z11- (also has line z10-, pathtext z10-)
++# natural-ridge-size-9                              # line(casing) z12- (also has line z10-, pathtext z11-)
++# === 59
++
+ man_made-breakwater                                 # line z14- and area z12- (also has caption z17-)
+ man_made-pier                                       # line z14- and area z12- (also has caption z17-)
+ waterway-dam                                        # line z14- and area z14- (also has pathtext z15-)
+diff --git a/data/styles/default/include/priorities_4_overlays.prio.txt b/data/styles/default/include/priorities_4_overlays.prio.txt
+index 2f7063ee..f1944fc4 100644
+--- a/data/styles/default/include/priorities_4_overlays.prio.txt
++++ b/data/styles/default/include/priorities_4_overlays.prio.txt
+@@ -1074,6 +1074,15 @@ natural-spring-drinking_water_no                    # icon z14- (also has captio
+ 
+ isoline-step_10                                     # pathtext z17- (also has line z15-)
+ isoline-zero                                        # pathtext z17- (also has line z15-)
++natural-ridge-size-10                               # pathtext z12- (also has line z10-, line(casing) z13-)
++natural-ridge-size-11                               # pathtext z13- (also has line z11-, line(casing) z14-)
++natural-ridge-size-12                               # pathtext z14- (also has line z12-, line(casing) z15-)
++natural-ridge-size-13                               # pathtext z15- (also has line z13-)
++natural-ridge-size-14                               # WARNING: no drule defined for the priority (also has line z14-)
++natural-ridge-size-6                                # pathtext z9- (also has line(casing) z9-, line z9-)
++natural-ridge-size-7                                # pathtext z9- (also has line z9-, line(casing) z10-)
++natural-ridge-size-8                                # pathtext z10- (also has line z10-, line(casing) z11-)
++natural-ridge-size-9                                # pathtext z11- (also has line z10-, line(casing) z12-)
+ === 1000
+ 
+ amenity-grave_yard                                  # icon z17- (also has caption(optional) z17-, area z14-)
+diff --git a/data/styles/default/light/colors.mapcss b/data/styles/default/light/colors.mapcss
+index bba1c937..2ea5bee7 100644
+--- a/data/styles/default/light/colors.mapcss
++++ b/data/styles/default/light/colors.mapcss
+@@ -206,3 +206,9 @@
+ @label_isoline100: #496149;
+ @label_isoline50: #567556;
+ @label_isoline10: #567556;
++
++/* 7.x.TERRAIN RIDGES COLORS */
++
++@ridge: #C20000;
++@ridge_casing: lightgrey;
++@label_ridge: #720808;
+diff --git a/data/styles/outdoors/include/priorities_3_FG.prio.txt b/data/styles/outdoors/include/priorities_3_FG.prio.txt
+index e70b1cd9..dc9f6b4b 100644
+--- a/data/styles/outdoors/include/priorities_3_FG.prio.txt
++++ b/data/styles/outdoors/include/priorities_3_FG.prio.txt
+@@ -444,8 +444,26 @@ isoline-step_1000                                   # line z10- (also has pathte
+ isoline-step_50                                     # line z13- (also has pathtext z15-)
+ isoline-step_500                                    # line z10- (also has pathtext z11-)
+ isoline-zero                                        # line z15- (also has pathtext z15-)
++natural-ridge-size-10                               # line z10- (also has line(casing) z13-, pathtext z12-)
++natural-ridge-size-11                               # line z11- (also has line(casing) z14-, pathtext z13-)
++natural-ridge-size-12                               # line z12- (also has line(casing) z15-, pathtext z14-)
++natural-ridge-size-13                               # line z13- (also has pathtext z15-)
++natural-ridge-size-14                               # line z14-
++natural-ridge-size-6                                # line z9- (also has line(casing) z9-, pathtext z9-)
++natural-ridge-size-7                                # line z9- (also has line(casing) z10-, pathtext z9-)
++natural-ridge-size-8                                # line z10- (also has line(casing) z11-, pathtext z10-)
++natural-ridge-size-9                                # line z10- (also has line(casing) z12-, pathtext z11-)
+ === 60
+ 
++# natural-ridge-size-10                             # line(casing) z13- (also has line z10-, pathtext z12-)
++# natural-ridge-size-11                             # line(casing) z14- (also has line z11-, pathtext z13-)
++# natural-ridge-size-12                             # line(casing) z15- (also has line z12-, pathtext z14-)
++# natural-ridge-size-6                              # line(casing) z9- (also has line z9-, pathtext z9-)
++# natural-ridge-size-7                              # line(casing) z10- (also has line z9-, pathtext z9-)
++# natural-ridge-size-8                              # line(casing) z11- (also has line z10-, pathtext z10-)
++# natural-ridge-size-9                              # line(casing) z12- (also has line z10-, pathtext z11-)
++# === 59
++
+ man_made-breakwater                                 # line z14- and area z12- (also has caption z17-)
+ man_made-pier                                       # line z14- and area z12- (also has caption z17-)
+ waterway-dam                                        # line z14- and area z14- (also has pathtext z15-)
+diff --git a/data/styles/outdoors/include/priorities_4_overlays.prio.txt b/data/styles/outdoors/include/priorities_4_overlays.prio.txt
+index a0743b8c..4cfe117f 100644
+--- a/data/styles/outdoors/include/priorities_4_overlays.prio.txt
++++ b/data/styles/outdoors/include/priorities_4_overlays.prio.txt
+@@ -1074,6 +1074,15 @@ natural-spring-drinking_water_no                    # icon z12- (also has captio
+ 
+ isoline-step_10                                     # pathtext z16- (also has line z15-)
+ isoline-zero                                        # pathtext z15- (also has line z15-)
++natural-ridge-size-10                               # pathtext z12- (also has line z10-, line(casing) z13-)
++natural-ridge-size-11                               # pathtext z13- (also has line z11-, line(casing) z14-)
++natural-ridge-size-12                               # pathtext z14- (also has line z12-, line(casing) z15-)
++natural-ridge-size-13                               # pathtext z15- (also has line z13-)
++natural-ridge-size-14                               # WARNING: no drule defined for the priority (also has line z14-)
++natural-ridge-size-6                                # pathtext z9- (also has line(casing) z9-, line z9-)
++natural-ridge-size-7                                # pathtext z9- (also has line z9-, line(casing) z10-)
++natural-ridge-size-8                                # pathtext z10- (also has line z10-, line(casing) z11-)
++natural-ridge-size-9                                # pathtext z11- (also has line z10-, line(casing) z12-)
+ power-line                                          # pathtext z15- (also has line z13-, line::dash z13-)
+ === 1000
+ 
+-- 
+2.43.0
+

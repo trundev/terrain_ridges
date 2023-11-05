@@ -1,0 +1,4 @@
+GDAL
+numpy
+pyproj
+ogr2osm
