@@ -23,6 +23,11 @@ on:
         required: false
         default: '--without_countries=World --skip=Coastline'
         type: string
+      APPLY_PATCHES:
+        description: "List of patches to be applied to Organic Maps sources (basedir 'omim_patch', wildcards allowed)"
+        required: false
+        default: ""
+        type: string
       OMIM_STYLE_PATCH:
         description: "Git-patch to modify the original Organic Maps styles"
         required: false
@@ -107,6 +112,17 @@ jobs:
         # Submodules are needed to build the "generator_tool", otherwise only "data" folder
         submodules: ${{ steps.omim-cache.outputs.cache-hit != 'true' && 'recursive' || 'false' }}
 
+    - name: "[OMIM] Experimental: Apply patches to Organic Maps sources"
+      if: inputs.APPLY_PATCHES
+      working-directory: ${{ env.WORK_DIR }}/omim_patch
+      run: |
+        Get-ChildItem "${{ inputs.APPLY_PATCHES }}".Split(",") | ForEach-Object {
+          echo "Applying $_"
+          git -C ${{ env.WORK_DIR }}/omim apply $_
+        }
+        echo "# Check result"
+        git -C ${{ env.WORK_DIR }}/omim status
+
     - name: "[OMIM] Build the generator_tool binary"
       if: steps.omim-cache.outputs.cache-hit != 'true'
       # See https://github.com/organicmaps/organicmaps/blob/master/tools/python/maps_generator/README.md#setup
@@ -171,6 +187,7 @@ jobs:
         - UNPACK_SRC: ${{ inputs.UNPACK_SRC }}
         - omim-version: ${{ inputs.omim-version }}
         - MAPS_GENERATOR_OPTS: ${{ inputs.MAPS_GENERATOR_OPTS }}
+        - APPLY_PATCHES: ${{ inputs.APPLY_PATCHES }}
         - OMIM_STYLE_PATCH: ${{ inputs.OMIM_STYLE_PATCH }}
         " >> $env:GITHUB_STEP_SUMMARY
 

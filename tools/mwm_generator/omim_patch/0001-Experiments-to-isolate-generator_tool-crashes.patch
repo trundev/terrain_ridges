@@ -1,0 +1,47 @@
+From 598531b63a3aa1b48d1b19b9344da7dcee0080c8 Mon Sep 17 00:00:00 2001
+From: Todor Trundev <trundev@gmail.com>
+Date: Sat, 11 Nov 2023 15:29:51 +0200
+Subject: [PATCH] Experiments to isolate generator_tool crashes
+
+Fix wait_and_raise_if_fail(), see 0931844b
+Early subprocess exit-code message
+---
+ tools/python/maps_generator/generator/exceptions.py | 4 +++-
+ tools/python/maps_generator/generator/gen_tool.py   | 6 ++++++
+ 2 files changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/tools/python/maps_generator/generator/exceptions.py b/tools/python/maps_generator/generator/exceptions.py
+index 3f8c94f2..6de9fb75 100644
+--- a/tools/python/maps_generator/generator/exceptions.py
++++ b/tools/python/maps_generator/generator/exceptions.py
+@@ -36,7 +36,9 @@ class FailedTest(MapsGeneratorError):
+ def wait_and_raise_if_fail(p):
+     if p.wait() != os.EX_OK:
+         args = p.args
+-        logs = p.output.name
++        #HACK: Here 'p' can be 'subprocess.Popen' or 'get_tool.GenTool' object
++        # only GenTool has an 'output' attribute
++        logs = getattr(getattr(p, 'output', None), 'name', p.error.name)
+         if p.error.name != logs:
+             logs += " and " + p.error.name
+         msg = f"The launch of {args.pop(0)} failed.\nArguments used: {' '.join(args)}\nSee details in {logs}"
+diff --git a/tools/python/maps_generator/generator/gen_tool.py b/tools/python/maps_generator/generator/gen_tool.py
+index 2c107dae..aa1f43bf 100644
+--- a/tools/python/maps_generator/generator/gen_tool.py
++++ b/tools/python/maps_generator/generator/gen_tool.py
+@@ -130,6 +130,12 @@ class GenTool:
+ 
+     def wait(self):
+         code = self.subprocess.wait()
++###
++        if code:
++            print(f'\n***\n{self.subprocess.args[0]} failed, code {code}, cmdline:\n')
++            print(f'> {" ".join(self.subprocess.args)}\n***\n')
++            return code     # Do not erase 'subprocess'
++###
+         self.subprocess = None
+         return code
+ 
+-- 
+2.34.1
+
