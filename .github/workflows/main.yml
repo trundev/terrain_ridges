@@ -46,7 +46,7 @@ jobs:
       MERGE_SRC_POSTFIX: "-merge.tif"
       MERGE_OPTIONS: "-a_nodata -32768"
       REF_RESULT_DIR: "ref_results"
-      DEM_EXTENSIONS: '".dem",".hgt",".tif",".tiff"'
+      DEM_EXTENSIONS: ".dem, .hgt, .tif, .tiff"
 
     defaults:
       run:
@@ -60,10 +60,10 @@ jobs:
         echo "DST_EXT=${{ env.DEF_DST_EXT }}" >> ${env:GITHUB_ENV}
         echo "GDALWARP_OPTIONS=${{ env.DEF_GDALWARP_OPTIONS }}" >> ${env:GITHUB_ENV}
 
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
 
     - name: Set up Python 3.13
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: '3.13'
 
@@ -84,24 +84,18 @@ jobs:
         }
 
     - name: Download source DEM
-      run: |
-        ForEach ($url in "${{ env.SRC_URL }}".Split(",")) {
-          echo "Downloading DEM from $url..."
-          $SRC_URI = [uri]"$url"
-          $SRC_ZIP = $SRC_URI.Segments[-1]
-          Invoke-WebRequest -Headers @{Accept='application/octet-stream,application/x-zip-compressed'} $SRC_URI -OutFile $SRC_ZIP
-          if ($proc.ExitCode) {exit $proc.ExitCode}
-          echo "Unzipping $SRC_ZIP..."
-          Expand-Archive $SRC_ZIP -DestinationPath ${{ env.SRC_DEM_DIR }}
-          if ($proc.ExitCode) {exit $proc.ExitCode}
-        }
+      id: download-dem
+      uses: ./.github/download-data
+      with:
+        source-urls: ${{ env.SRC_URL }}
+        unpack-sources: true
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        UNPACK_DIR: ${{ env.SRC_DEM_DIR }}
+        UNPACK_EXTENSIONS: ${{ env.DEM_EXTENSIONS }}
 
-        $SRC_DEM = @(Get-ChildItem ${{ env.SRC_DEM_DIR }})
-        # Select just the DEM-files, if multiple files were extracted
-        if ($SRC_DEM.Length -gt 1) {
-          $SRC_DEM = @($SRC_DEM | Where-Object {$_.Extension -in ${{ env.DEM_EXTENSIONS }} })
-          $SRC_DEM = $SRC_DEM -join ", "
-        }
+    - name: Set environment for ${{ steps.download-dem.outputs.source-names }}
+      run: |
+        $SRC_DEM = "${{ steps.download-dem.outputs.download-paths }}"
         echo "SRC_DEM=$SRC_DEM" >> ${env:GITHUB_ENV}
         echo "SRC_DEM set to $SRC_DEM"
 
@@ -150,7 +144,7 @@ jobs:
     - name: Generate ridges
       run: python ridges.py ${{ env.TOOL_OPTIONS }} ${{ env.SRC_DEM }} ${{ env.DST_NAME }}
 
-    - uses: actions/upload-artifact@v3
+    - uses: actions/upload-artifact@v4
       with:
         name: ${{ env.DST_NAME }}
         path: |

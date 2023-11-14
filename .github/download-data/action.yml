@@ -1,0 +1,105 @@
+name: Download source data
+description: Download source OGR files from web, unzip if needed
+inputs:
+  source-urls:
+    description: "Comma separated list of URLs to download data from"
+    default: ""
+    required: true
+    type: string
+  unpack-sources:
+    description: "Unpack source files from archives"
+    default: false
+    required: false
+    type: boolean
+  GITHUB_TOKEN:
+    description: "Token to be used when downloading data"
+    default: ""
+    required: false
+    type: string
+  # The variables below are mostly to replace lack of "runs.env" section in composite actions
+  DOWNLOAD_DIR:
+    description: "Destination path for downloaded source data"
+    default: "${{ runner.temp }}"
+    required: false
+    type: string
+  UNPACK_DIR:
+    description: "Destination path for unpacked data, when 'unpack-sources' is true"
+    default: "${{ runner.temp }}/unpack~"
+    required: false
+    type: string
+  UNPACK_EXTENSIONS:
+    description: "Comma separated list of extensions to select source-files (if multiple), when 'unpack-sources' is true"
+    default: ".kml, .kmz, .geojson, .gml, .csv, .shp, .gpx"
+    required: false
+    type: list
+
+outputs:
+  source-names:
+    description: "Source file-names for display purposes"
+    value: ${{ steps.download-src.outputs.source-names }}
+  download-paths:
+    description: "Source file-names for display purposes"
+    value: ${{ steps.download-src.outputs.download-paths }}
+
+runs:
+  using: "composite"
+  steps:
+  - name: Download source files
+    id: download-src
+    shell: pwsh
+    run: |
+      echo "# Download source files from ${{ inputs.source-urls }}"
+      $SRC_URLS = "${{ inputs.source-urls }}".Split(",").Trim()
+      $SRC_FILES = @()
+      ForEach ($url in $SRC_URLS) {
+        echo "Downloading from $url ..."
+        # This is to allow download of both github release/assets and action/artifacts
+        Try {
+          $data = Invoke-WebRequest -Uri $url -UseBasicParsing -Headers @{
+              Accept='application/octet-stream,application/x-zip-compressed';
+              Authorization='Bearer ${{ inputs.GITHUB_TOKEN }}'}
+        } Catch [System.Exception] {
+          # Artifact download attempts fail with 'application/octet-stream'
+          echo "WebException: $_"
+          echo "Try with 'application/json'..."
+          $data = Invoke-WebRequest -Uri $url -UseBasicParsing -Headers @{
+              Accept='application/json';
+              Authorization='Bearer ${{ inputs.GITHUB_TOKEN }}'}
+        }
+
+        # Select file-name: from HTTP response or URL
+        $cdips = $data.Headers['Content-Disposition']
+        if ( $cdips ) {
+          $fname = $cdips.Split(';').Trim()
+          $fname = $fname.Where({$_ -like 'filename=*'}).Split('=')[1]
+        } else {
+          $fname = ([uri]$url).Segments[-1]
+        }
+        $fname = "${{ inputs.DOWNLOAD_DIR }}/$fname"
+        Set-Content $fname $data.Content -AsByteStream
+        $SRC_FILES += Get-Item $fname
+      }
+      $SRC_FILES_NAME = $SRC_FILES.Name -join ","
+
+      if ($${{ inputs.unpack-sources }}) {
+        echo "# Unpack $SRC_FILES_NAME"
+        ForEach ($zip in $SRC_FILES) {
+          echo "Unzipping $zip..."
+          Expand-Archive $zip -DestinationPath "${{ inputs.UNPACK_DIR }}"
+        }
+
+        $SRC_FILES = @(Get-ChildItem "${{ inputs.UNPACK_DIR }}")
+        # Select just the OGR-files, if multiple files were extracted
+        if ($SRC_FILES.Length -gt $SRC_URLS.Length -and "${{ inputs.UNPACK_EXTENSIONS }}") {
+          $SRC_FILES = @($SRC_FILES | Where-Object {
+              $_.Extension -in "${{ inputs.UNPACK_EXTENSIONS }}".Split(",").Trim()
+          })
+          echo "# Unpacked files filtered to: $SRC_FILES"
+        }
+      }
+      $SRC_FILES = $SRC_FILES -join ","
+
+      echo "download-paths=$SRC_FILES" >> ${env:GITHUB_OUTPUT}
+      echo "source-names=$SRC_FILES_NAME" >> ${env:GITHUB_OUTPUT}
+      echo "download-src.outputs.download-paths set to $SRC_FILES"
+      echo "download-src.outputs.source-names set to $SRC_FILES_NAME"
