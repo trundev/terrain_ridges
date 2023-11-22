@@ -421,45 +421,45 @@ def find_edge(edge_list: np.array, edge_is_base: np.array, base_node, neighbor_n
         np.testing.assert_equal(edge_list[:, ::-1][:, swap, idx], neighbor_node, 'Edge neighbor node do not match expected one')
     return idx, swap.astype(bool)
 
-def trace_graph(node: np.array, main_edge_list: np.array, main_edge_is_base: np.array, graph_list: list[np.array]) -> np.array:
+def trace_graph_route(node_beg: np.array, node_end: np.array, main_edge_list: np.array, main_edge_is_base: np.array, graph_list: list[np.array]) -> np.array:
     """Trace individual edges in a graph at layer 0"""
-    main_edge_layer = find_main_edge_layer(main_edge_list)
-    layer = len(graph_list) - 1
-    par_nodes = graph_list[layer]
-    _, seed_mask = isolate_graphtrees(par_nodes)
-    node = np.asarray(node)
-    # Get list of nodes in the trace
-    node_chain = np.empty_like(node, shape=node.shape + (0,))
-    #TODO: Handle tracing of multiple nodes, where each trace is of different length
-    while not seed_mask[*node]:
-        node_chain = np.concatenate((node_chain, node[..., np.newaxis]), axis=-1)
+    # The 'is_base' mask, but for particular layer only
+    edge_layer_mask = find_main_edge_layer(main_edge_list[-2:]) == 0
+    edge_base_mask = main_edge_is_base.copy()
+    edge_base_mask[:, ~edge_layer_mask] = False
+    if True:    # Check if 'node_beg' and 'node_end' are from the same graph-tree by checking their IDs in upper layer
+        edge_list = main_edge_list[:, edge_base_mask]
+        up_beg_end = edge_list[-1][(edge_list[-2] == [node_beg, node_end]).any(0)]
+        print(f'Tracing edge between {node_beg} and {node_end} (up-layer: {up_beg_end})')
+        assert up_beg_end[0] == up_beg_end[1], 'Nodes must be from the same graph-tree'
+        del edge_list, up_beg_end
+
+    par_nodes, flip_mask = merge_graphtrees(graph_list[-1], np.stack((node_end, node_end), axis=-1))
+
+    # Apply 'flip_mask' on 'main_edge_is_base'
+    mask = edge_base_mask.copy()
+    mask[mask] = flip_mask[main_edge_list[-2, mask]]
+    mask = mask.any(0)
+    edge_base_mask[:, mask] = edge_base_mask[::-1, mask]
+    main_edge_is_base_flip = main_edge_is_base.copy()
+    main_edge_is_base_flip[:, mask] = main_edge_is_base_flip[::-1, mask]
+    del mask
+
+    # Get list of nodes in the trace starting from 'node_beg'
+    node = node_beg
+    node_chain = node[:, np.newaxis]
+    while (node != node_end).any(0) and (node != par_nodes[:, *node]).any(0):
         node = par_nodes[:, *node]
-    if layer == 0:  #TODO: CHECKME: Layer-0 trace includes the seed also
-        return np.concatenate((node_chain, node[..., np.newaxis]), axis=-1)
+        node_chain = np.concatenate((node_chain, node[:, np.newaxis]), axis=-1)
 
-    # Empty line using layer-0 graph dimensions
-    line = np.empty_like(node, shape=graph_list[0].shape[:1] + (0,))
-    if node_chain.size == 0:    # No trace in this layer
-        return line
-
-    # Take the edge-index for these nodes (filter out edges from other layers)
-    edge_is_base = main_edge_is_base.copy()
-    edge_is_base[:, main_edge_layer != layer] = False
-    idx, swap = find_edge(main_edge_list[layer][np.newaxis, ...], edge_is_base, node_chain)
-    # Go all layers below
-    for layer in reversed(range(layer)):
-        edge_list = main_edge_list[layer][:, idx]   # This copies, as it is advanced-indexing
-        edge_list[:, swap] = edge_list[::-1, swap]
-        if layer:   # Add node-id dimension in first axis
-            edge_list = edge_list[np.newaxis, ...]
-        else:       # Unravel node-ids to match layer-0 graph
-            edge_list = np.asarray(np.unravel_index(edge_list, graph_list[0].shape[1:]))
-        for edge_beg, edge_end in edge_list.T:
-            line_beg = trace_graph(edge_beg, main_edge_list, main_edge_is_base, graph_list[:layer + 1])
-            line_end = trace_graph(edge_end, main_edge_list, main_edge_is_base, graph_list[:layer + 1])
-            line = np.concatenate((line, line_beg[...,::-1], line_end), axis=-1)
-
-    return line
+    if len(graph_list) > 1:
+        # Build 'edge_list' from flipped base-mask
+        edge_list = main_edge_list[:, edge_base_mask]
+        #TODO: this is not ordered, the last node is missing
+        node_chain = edge_list[-3][(edge_list[-2] == node_chain.T).any(0)]
+        #TODO: Trace whole chain...
+        node_chain = trace_graph_route(node_chain[0], node_chain[-1], main_edge_list[:-1], main_edge_is_base_flip, graph_list[:-1])
+    return node_chain
 
 def trace_parent_link(node: np.array, main_edge_list: np.array, main_edge_is_base: np.array, graph_list: list[np.array]) -> np.array:
     """Trace single edge between two nodes at layer 0"""
@@ -750,19 +750,25 @@ if __name__ == '__main__':
                 name='Main-graph') | dict(mode='lines', visible='legendonly')
 ###Experimental
         if edges_info:
-            layer = len(graph_list) - 1
+            layer = len(graph_list) - 2
             if True:    # Single node
-                node = [2]
+                node_beg = [6]
+                node_end = [7]
             else:   # All base nodes in specific layer
                 node = np.arange(graph_list[layer].shape[-1])
                 mask = (graph_list[layer] != node).any(0)
                 node = node[np.newaxis, mask]
-            line_arr = trace_parent_link(node, edges_info[2], edges_info[3], graph_list[:layer + 1])
+            line_arr = trace_parent_link(node_beg, edges_info[2][:layer + 2], edges_info[3], graph_list[:layer + 1])
             line_arr = lla_grid[*line_arr]
-            yield visualize.figarg_create_lines(line_arr) | dict(name=f'Layer {layer} node {node} (len {line_arr.shape[0]})', mode='lines+markers')
+            yield visualize.figarg_create_lines(line_arr) | dict(name=f'Layer {layer} node {node_beg} (len {line_arr.shape[0]})', mode='lines+markers')
 
-            line_arr = trace_graph(node, edges_info[2], edges_info[3], graph_list[:layer + 1])
-            yield visualize.figarg_create_lines(lla_grid[*line_arr]) | dict(name=f'Layer {layer} start-node {node} (len {line_arr.shape[-1]})', mode='lines+markers')
+            # Single layer trace
+            node_beg, node_end = np.asarray(node_beg), np.asarray(node_end)
+            line_arr = trace_graph_route(node_beg, node_end, edges_info[2][layer:layer + 2], edges_info[3], graph_list[layer:layer + 1])
+            print(f'Tracing layer {layer}: nodes {node_beg}->{node_end}: {line_arr}')
+            # Deep-trace
+            line_arr = trace_graph_route(node_beg, node_end, edges_info[2][:layer + 2], edges_info[3], graph_list[:layer + 1])
+            yield visualize.figarg_create_lines(lla_grid[*line_arr]) | dict(name=f'Layer {layer} beg-node {node_beg} (len {line_arr.shape[-1]})', mode='lines+markers')
 ###
 
         # Individual trees inside main-graph
