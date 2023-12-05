@@ -3,6 +3,7 @@
 
 """
 import sys
+import pickle
 from dataclasses import dataclass
 import numpy as np
 
@@ -406,6 +407,66 @@ def build_graph_layers(alt_grid: np.array, *, distance: callable or None=None, m
     print(f'Build-graph ends with {main_edge_list.shape[-1]} edges')
     return (unravel_edge_list[:, 0], unravel_edge_list[:, 1], main_edge_list, main_edge_is_base), graph_list
 
+#
+# Visualization related
+#
+def num_node_children(par_nodes: np.array) -> np.array:
+    """Count the number of children for each graph node"""
+    assert_graph_shape(par_nodes)
+    num_child = np.zeros_like(par_nodes[0])
+    # Avoid '+=' overlapping, by using unbuffered in place operation, see "numpy.ufunc.at"
+    np.add.at(num_child, tuple(par_nodes), 1)
+    return num_child
+
+def average_seed_pos(node_pos: np.array, tree_idx: np.array, seed_mask: np.array) -> np.array:
+    """Average positions of seeds from same graph-tree"""
+    num_trees = tree_idx.max() + 1
+    node_pos = node_pos[seed_mask]
+    center_sum = np.zeros_like(node_pos, shape=(num_trees, node_pos.shape[-1]))
+    center_num = np.zeros(shape=(num_trees,))
+    indices = tree_idx[seed_mask]
+    np.add.at(center_sum, indices, node_pos)
+    np.add.at(center_num, indices, 1)
+    return (center_sum.T / center_num).T
+
+def get_node_center(node_pos: np.array, tree_idx_seed: iter) -> np.array:
+    """Propagate averaged seed positions to higher layer"""
+    for tree_idx, seed_mask in tree_idx_seed:
+        node_pos = average_seed_pos(node_pos, tree_idx, seed_mask)
+    return node_pos
+
+def store_topo_graph(fname: str, graph_list: list[np.array], edge_list: np.array, edge_is_base: np.array) -> None:
+    """Pickle topo-graph representation"""
+    # Take all seed-nodes from layer 0
+    _, node_mask = isolate_graphtrees(graph_list[0])
+    # Add all nodes from edge_list layer 0
+    e_list = np.unravel_index(edges_info[2][0], shape=node_mask.shape)
+    node_mask[*e_list] = True
+
+    # Pickle format: key-node positions, graph-list, edge-list, edge-is-base flags
+    with open(fname, 'wb') as f:
+        pickle.dump(file=f, obj=dict(
+                node_pos_idx=np.nonzero(node_mask),
+                node_pos=lla_grid[node_mask],
+                graph_list=graph_list,
+                edge_list=edge_list,
+                edge_is_base=edge_is_base,
+            ))
+
+def load_topo_graph(fname: str, expand_node_pos: bool=True) -> dict:
+    """Unpickle topo-graph representation"""
+    with open(fname, 'rb') as f:
+        graph_data = pickle.load(f)
+
+    if expand_node_pos and 'node_pos_idx' in graph_data:
+        # The 'node_pos' coordinates correspond to 'node_pos_idx' elements, others are unknown
+        node_pos = graph_data['node_pos']
+        new_pos = np.full_like(node_pos, np.nan, shape=graph_data['graph_list'][0].shape[1:] + node_pos.shape[-1:])
+        new_pos[*graph_data.pop('node_pos_idx')] = node_pos
+        graph_data['node_pos'] = new_pos
+
+    return graph_data
+
 ####Experimental
 def find_edge(edge_list: np.array, edge_is_base: np.array, base_node, neighbor_node=None):
     """Find edge between neighbor graph-nodes in edge-list (node-index is array)"""
@@ -704,6 +765,9 @@ if __name__ == '__main__':
             distance = USE_DISTANCE(dem_band)
             dist = lambda b,n: distance.get_distance(b.T, n.T, flat=True).T
         edges_info, graph_list = build_graph_layers(lla_grid[...,-1], distance=dist)
+        if True:
+            store_topo_graph('topo_graph.pickle', graph_list, edges_info[2], edges_info[3])
+
         # Keep layers where each edge is used
         main_edge_layer = find_main_edge_layer(edges_info[2])
         if True:    #TODO: Slow assert
