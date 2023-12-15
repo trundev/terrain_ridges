@@ -208,6 +208,12 @@ def build_edge_list(alt_grid: np.array, *, distance: callable or None=None) -> (
 
     # Get base-altitude and slope (or just altiture difference)
     base_alt = alt_grid[*np.stack((base_idx, neighbor_idx), axis=1)]
+    # Filter-out edges, involving NaN
+    mask = ~np.isnan(base_alt).any(0)
+    if not mask.all():
+        base_alt = base_alt[:, mask]
+        base_idx = base_idx[:, mask]
+        neighbor_idx = neighbor_idx[:, mask]
     slope = base_alt[1] - base_alt[0]
     base_alt = base_alt.min(0)
     # Use actual slope arctan(vert / hor)
@@ -307,7 +313,7 @@ def build_graph_layers(alt_grid: np.array, *, distance: callable or None=None, m
             np.ravel_multi_index(base_idx, alt_grid.shape),
             np.ravel_multi_index(neighbor_idx, alt_grid.shape)))
     del base_idx, neighbor_idx
-    np.testing.assert_equal(np.nonzero(main_edge_list == np.argmax(alt_grid))[0], 1,
+    np.testing.assert_equal(np.nonzero(main_edge_list == np.nanargmax(alt_grid))[0], 1,
             'The highest point was found at base-side of an edge')
     print(f'Build-graph starts with {main_edge_list.shape[-1]} edges')
 
@@ -404,7 +410,8 @@ def build_graph_layers(alt_grid: np.array, *, distance: callable or None=None, m
     # The 'par_nodes' are coming from ravel_multi_index(), so use 'strict_unravel'
     graph_list[0] = reshape_graph(graph_list[0], alt_grid.shape, strict_unravel=True)
 
-    print(f'Build-graph ends with {main_edge_list.shape[-1]} edges')
+    ghost_edges = np.count_nonzero(~main_edge_is_base.any(0))
+    print(f'Build-graph ends with {main_edge_list.shape[-1]} ({ghost_edges} ghost) edges in {len(graph_list)} layers')
     return (unravel_edge_list[:, 0], unravel_edge_list[:, 1], main_edge_list, main_edge_is_base), graph_list
 
 #
@@ -859,20 +866,15 @@ if __name__ == '__main__':
         # Generate coverage masks
         for layer, (tree_idx, seed_mask) in enumerate(tree_idx_seed):
             print(f'Generating graph-layer {layer}')
-            center_mask = seed_mask
+            # Visualize links between nodes (upper layer graph)
+            if layer + 1 < len(graph_list):
+                lla_layer = get_node_center(lla_grid, tree_idx_seed[:layer + 1])
+                yield visualize.figarg_create_graph_lines(lla_layer, graph_list[layer + 1], len_scale=1,
+                        name=f'Graph layer {layer + 1}') | dict(mode='lines+markers')
+            # Visualize coverage of layer nodes
             for t_idx, s_mask in reversed(tree_idx_seed[:layer]):
                 tree_idx = tree_idx[t_idx]
                 seed_mask = seed_mask[t_idx]
-                center_mask = center_mask[t_idx] & s_mask
-            # Visualize links between nodes (upper layer graph)
-            if layer + 1 < len(graph_list):
-                par_nodes = graph_list[layer + 1]
-                lla_layer = np.full_like(lla_grid, np.nan, shape=par_nodes.shape[1:] + lla_grid.shape[-1:])
-                for id in np.ndindex(par_nodes.shape[1:]):
-                    lla_layer[*id] = lla_grid[(tree_idx == id) & center_mask].mean(0)
-                yield visualize.figarg_create_graph_lines(lla_layer, par_nodes, len_scale=1,
-                        name=f'Graph layer {layer + 1}') | dict(mode='lines+markers')
-            # Visualize coverage of layer nodes
             for s in create_graphtree_coverage(tree_idx, seed_mask):
                 yield s
             slider.add_slider_pos()
