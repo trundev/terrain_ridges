@@ -141,6 +141,11 @@ jobs:
 
         python -m osgeo_utils.samples.gdalinfo ${{ env.SRC_DEM }}
 
+    - name: Run PyTests
+      env:
+        PYTHONPATH: "."
+      run: pytest --capture=tee-sys --ignore=GDAL~
+
     - name: Generate ridges
       run: python ridges.py ${{ env.TOOL_OPTIONS }} ${{ env.SRC_DEM }} ${{ env.DST_NAME }}
 
