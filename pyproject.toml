@@ -12,7 +12,7 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 license-files = ["./LICENSE"]
-dependencies = ["GDAL", "numpy", "pyproj"]
+dependencies = ["GDAL", "numpy", "pyproj", "contourpy"]
 
 [project.optional-dependencies]
 # Development deps, installed through `pip install .[dev]`
