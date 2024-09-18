@@ -60,7 +60,7 @@ def sorted_arr_insert(arr, entry, key, end=None):
     # When multiple entries are going to be inserted, ensure they are sorted
     # This is only mandatory, when multiple elements have the same insertion point
     if entry.ndim:
-        argsort = numpy.argsort(entry[key])
+        argsort = numpy.argsort(entry[key], kind='stable')
         entry = numpy.take(entry, argsort)
     # Actual insert, do not search beyond 'end'
     idx = numpy.searchsorted(arr[:end][key], entry[key])
@@ -456,21 +456,19 @@ class dst_layer_mgr:
     def get_layer(self, branch):
         """Obtain/create layer for specific geometry"""
         # Select layer ID and check if it's already created
+        layer_id = self.id_fmt
+        layer_options = DEF_LAYER_OPTIONS
         if self.multi_layer:
-            level = round(get_zoom_level(self.spatial_ref, branch['area']))
-            layer_id = self.id_fmt + '_level%d'%level
-            layer_options = ['NAME=' + self.id_fmt + ' - level %d'%level]
-        else:
-            layer_id = self.id_fmt
-            layer_options = []
+            level = get_zoom_level(self.spatial_ref, branch['area'])
+            if level is not None:
+                level = round(level)
+                layer_id += '_level%d'%level
+                layer_options += ['NAME=' + self.id_fmt + ' - level %d'%level]
         if layer_id in self.layer_set:
             return self.layer_set[layer_id], False
 
         # Add some more layer options
-        layer_options += DEF_LAYER_OPTIONS
-        bydrv_options = BYDVR_LAYER_OPTIONS.get(self.dst_ds.get_drv_name())
-        if bydrv_options:
-            layer_options += bydrv_options
+        layer_options += BYDVR_LAYER_OPTIONS.get(self.dst_ds.get_drv_name(), [])
         # Create the layer
         dst_layer = gdal_utils.gdal_vect_layer.create(self.dst_ds,
                 layer_id,
@@ -531,11 +529,13 @@ def main(args):
     # Load DEM
     dem_band = gdal_utils.dem_open(args.src_dem_file)
     if dem_band is None:
-        return parser.exit(f'Unable to open source DEM "{args.src_dem_file}"')
+        print(f'Error: Unable to open source DEM "{args.src_dem_file}"', file=sys.stderr)
+        return 1
 
     dst_ds = gdal_utils.vect_create(args.dst_ogr_file, drv_name=args.dst_format)
     if dst_ds is None:
-        return parser.exit(f'Unable to create destivation OGR "{args.dst_ogr_file}"')
+        print(f'Error: Unable to create destination OGR "{args.dst_ogr_file}"', file=sys.stderr)
+        return 1
 
     dem_band.load()
 
@@ -562,6 +562,8 @@ def main(args):
             keep_arrays(args.src_dem_file + '-1-', {'mgrid_n_xy': mgrid_n_xy,})
     elif args.resume_from_snapshot == 1:
         mgrid_n_xy, = restore_arrays(args.src_dem_file + '-1-', {'mgrid_n_xy': None,})
+    else:
+        mgrid_n_xy = None   # Workaround Static Type Checker issue
 
     #
     # The coverage-area of each pixels is needed by arrange_lines()
@@ -630,8 +632,11 @@ def main(args):
             min_area = numpy.nanmean(area_arr) * (4 ** 3)
         else:
             # Trim to the area at 'maxzoom_level'
-            lvl = get_zoom_level(dem_band.get_spatial_ref(), 1)
-            min_area = 4 ** (lvl - maxzoom_level - .5)  # The .5 is to match round() used by dst_layer_mgr.get_layer()
+            lvl = get_zoom_level(dem_band.get_spatial_ref(), 1)     # The zoom-level of 1m^2
+            if lvl is None:
+                min_area = 0        # include all branches
+            else:
+                min_area = 4 ** (lvl - maxzoom_level - .5)  # The .5 is to match round() used by dst_layer_mgr.get_layer()
 
         mask = branch_lines['area'] >= min_area
         if numpy.count_nonzero(mask) > 0:
@@ -656,6 +661,9 @@ def main(args):
         branch_lines, = restore_arrays(args.src_dem_file + '-3-', {
                     'branch_lines': BRANCH_LINE_DTYPE,
                 })
+    else:
+        # Workaround Type Checker issue
+        raise ValueError('Unsupported --resume-from-snapshot level')
 
     #
     # Generate geometry
@@ -664,8 +672,7 @@ def main(args):
         start = time.perf_counter()
 
         # Branch coverage area of each pixel (branch['area'] assert only)
-        if ASSERT_LEVEL >= 3:
-            acc_area_arr = accumulate_pixel_coverage(area_arr, mgrid_n_xy)
+        acc_area_arr = accumulate_pixel_coverage(area_arr, mgrid_n_xy) if ASSERT_LEVEL >= 3 else None
         del area_arr
 
         layer_mgr = dst_layer_mgr(dst_ds, dem_band.get_spatial_ref(), args.valleys, args.multi_layer is not None)
@@ -678,6 +685,7 @@ def main(args):
         if args.smoothen_geometry:
             mgrid_lonlatalt = smoothen_by_mgrid(mgrid_lonlatalt, filter_mgrid(mgrid_n_xy, branch_lines['start_xy']))
 
+        name_field = desc_field = natural_field = None
         geometries = 0
         for branch in branch_lines:
             if ASSERT_LEVEL >= 3:
@@ -713,6 +721,9 @@ def main(args):
 
             # Create actual geometry
             geom = dst_layer.create_feature_geometry(gdal_utils.wkbLineString)
+            if geom is None:
+                print(f'Error: Unable to create OGR geometry', file=sys.stderr)
+                return 1
             geom.set_field(name_field, '%dm'%dist if dist < 10000 else '%dkm'%round(dist/1000))
             geom.set_field(desc_field, 'length: %.1f km, area: %.1f km2'%(dist / 1e3, branch['area'] / 1e6))
             if FEATURE_OSM_NATURAL:
