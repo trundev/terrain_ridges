@@ -63,6 +63,24 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
 
+    - name: Initial job summary
+      run: |
+        "### Inputs
+        - SRC_URL: ${{ env.SRC_URL }}
+        - UNPACK_SRC: ${{ env.UNPACK_SRC }}
+        - OSMAND_CREATOR_URL: ${{ env.OSMAND_CREATOR_URL }}
+        " >> $env:GITHUB_STEP_SUMMARY
+
+        "<details><summary>Installed packages</summary>
+
+          | Package  | Version |
+          |----------|---------|
+        $(pip freeze | ForEach-Object {
+          "  | $($_ -replace '==', ' | ' -replace ' @ ', ' | ') |"} |
+          Join-String -Separator "`n")
+        </details>
+        " >> $env:GITHUB_STEP_SUMMARY
+
     - name: Set up JAVA
       uses: actions/setup-java@v4
       with:
@@ -80,6 +98,10 @@ jobs:
         if ($proc.ExitCode) {exit $proc.ExitCode}
         echo "Unzipping $zip..."
         Expand-Archive $zip -DestinationPath OsmAndMapCreator
+        $CLASSPATH = $(Get-Item OsmAndMapCreator)
+        $CLASSPATH = "$CLASSPATH/OsmAndMapCreator.jar;$CLASSPATH/lib/*.jar"
+        echo "CLASSPATH=$CLASSPATH" >> $env:GITHUB_ENV
+        echo "CLASSPATH set to $CLASSPATH"
 
     - name: Select DST_NAME
       run: |
@@ -103,3 +125,17 @@ jobs:
         path: |
           ${{ env.DOWNLOAD_DIR }}/*${{ env.DST_EXT }}
           ${{ env.UNPACK_DIR }}/*${{ env.DST_EXT }}
+
+    - name: Update job summary
+      working-directory: tools/obf_generator
+      run: |
+        "### Result" >> $env:GITHUB_STEP_SUMMARY
+        ForEach ($dst in Get-Item *${{ env.DST_EXT }}) {
+          "<details><summary>$($dst.Name)</summary>
+
+          " + '```' >> $env:GITHUB_STEP_SUMMARY
+          java net.osmand.obf.BinaryInspector -v $dst >> $env:GITHUB_STEP_SUMMARY
+          '```
+          </details>
+          ' >> $env:GITHUB_STEP_SUMMARY
+        }
