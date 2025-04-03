@@ -96,44 +96,47 @@ def merge_graphtrees(tgt_nodes: T_Graph, edge_list: T_IndexArray, *, keep_args: 
 
     return tgt_nodes, flip_mask
 
-def isolate_graphtrees(tgt_nodes: T_Graph) -> tuple[T_IndexArray, T_MaskArray]:
-    """Identify isolated graph-trees, assign their indices to each node"""
+def isolate_graph_loops(tgt_nodes: T_Graph) -> T_MaskArray:
+    """Identify node-loops inside tree-graph (part of isolate_graphtrees() process)"""
     assert_graph_shape(tgt_nodes)
-    node_ids = np.arange(tgt_nodes[0].size).reshape(tgt_nodes.shape[1:])
-    pend_mask = np.ones(shape=tgt_nodes[0].shape, dtype=bool)
-    # Expand the IDs till stop changing
-    init_node_ids = node_ids.copy()
-    loop_mask = np.array(False)
-    while True:
-        # Expand all pending-s, but smallest ID inside loops
-        node_ids[loop_mask] = np.minimum(node_ids[loop_mask], node_ids[*tgt_nodes[:, loop_mask]])
-        node_ids[pend_mask] = node_ids[*tgt_nodes[:, pend_mask]]
-        # Detect loop nodes
-        if (init_node_ids[loop_mask] == node_ids[loop_mask]).all():
-            # No change in any of the loops - done?
-            if not pend_mask.any():
-                break
-            # Reduce pending-s
-            pend_mask[pend_mask] = pend_mask[*tgt_nodes[:, pend_mask]]
-        else:
-            # 'init_node_ids' keeps smallest ID inside loops
-            init_node_ids[loop_mask] = node_ids[loop_mask]
-        # Update loops / pending-s
-        loop_mask = loop_mask | (init_node_ids == node_ids)
-        pend_mask &= ~loop_mask
+    loop_mask = np.zeros_like(tgt_nodes[0], dtype=bool)
+    mask = ~loop_mask
+    while (mask != loop_mask).any():
+        loop_mask[...] = mask
+        mask[...] = False
+        # No need of unbuffered operation, as overwrites are using the same value
+        mask[*tgt_nodes[:, loop_mask]] = True
+    return loop_mask
 
-    # Convert the 'node_ids' to indices by using "return_inverse"
-    # It generates array of same size, containing unique indices
-    _, node_ids = np.unique(node_ids, return_inverse=True)
-    node_ids = node_ids.reshape(pend_mask.shape)
-    assert node_ids.min() == 0
-    assert np.count_nonzero(loop_mask) > node_ids.max(), f'Graph-trees are more than seed-nodes'
-    if np.count_nonzero(loop_mask) > node_ids.max() + 1:
-        print('Warning: Detected %d extra/loop nodes in %d graph-trees'%(
-                np.count_nonzero(loop_mask) - node_ids.max() - 1, node_ids.max() + 1),
-                file=sys.stderr)
-    # Final result: graph-tree indices and mask of seed/loop nodes
-    return node_ids, loop_mask
+def expand_along_graph(vals: npt.NDArray, tgt_nodes: T_Graph) -> npt.NDArray:
+    """Expand values toward graph source-nodes (part of isolate_graphtrees() process)"""
+    assert_graph_shape(tgt_nodes)
+    last_vals = None
+    while (vals != last_vals).any():
+        last_vals = vals
+        vals = vals[*tgt_nodes]
+    return vals
+
+def isolate_graphtrees(tgt_nodes: T_Graph, loop_mask: T_MaskArray|None=None
+                       ) -> tuple[T_IndexArray, T_MaskArray]:
+    """Identify isolated graph-trees, can use already identified loops"""
+    assert_graph_shape(tgt_nodes)
+    if loop_mask is None:
+        loop_mask = isolate_graph_loops(tgt_nodes)
+    else:
+        np.testing.assert_equal(loop_mask[*tgt_nodes[:, loop_mask]], True,
+                'The Loop-subgraph must NOT include branches or leaves')
+    # Assign unique IDs to each graph-loop
+    node_ids = np.full_like(tgt_nodes[0], -1)
+    last_node_ids = node_ids.copy()
+    node_ids[loop_mask] = np.arange(np.count_nonzero(loop_mask))
+    while (node_ids != last_node_ids).any():
+        last_node_ids[...] = node_ids
+        node_ids[loop_mask] = np.minimum(node_ids[loop_mask], node_ids[*tgt_nodes[:, loop_mask]])
+    _, node_ids[loop_mask] = np.unique(node_ids[loop_mask], return_inverse=True)
+
+    # Expand graph-loop IDs outward
+    return expand_along_graph(node_ids, tgt_nodes), loop_mask
 
 def cut_graph_loops(tgt_nodes: T_Graph, tree_idx: T_IndexArray, seed_mask: T_MaskArray, *,
                     sort_keys: npt.NDArray|None=None, return_copy: bool=True) -> T_Graph:
@@ -165,8 +168,13 @@ def edge_list_to_parents(edge_list: T_IndexArray) -> T_IndexArray:
     # Build a 1D graph, each node points to the one from parent layer
     shape = edge_list[0].max() + 1,
     assert edge_list[0].min() >= 0 and edge_list[1].min() >= 0, 'Node IDs are treated as indices'
-    node_ids = np.full(shape, -1, dtype=edge_list.dtype)
+    inval = edge_list[1].min() - 1
+    node_ids = np.full(shape, inval, dtype=edge_list.dtype)
     node_ids[edge_list[0]] = edge_list[1]
+    # Nodes, not used by any edge, must refer to the gaps in the parent layer
+    mask = np.ones(shape=shape, dtype=bool)
+    mask[edge_list[1]] = False
+    node_ids[node_ids == inval] = np.arange(*shape)[mask][:np.count_nonzero(node_ids == inval)]
     return node_ids
 
 def edge_list_to_graph(edge_list: T_IndexArray, edge_src_mask: T_MaskArray) -> T_Graph:
@@ -537,6 +545,11 @@ if __name__ == '__main__':
             t_idx, s_mask = isolate_graphtrees(tgt_nodes)
             print(f'  Processing layer {layer} of {tgt_nodes[0].size} nodes: {t_idx.max()+1} in next, {np.count_nonzero(s_mask)} seeds')
             tree_idx_seed.append((t_idx, s_mask))
+            if True:    # Confirm tree-indices can be retrieved from edge-list
+                t_idx2 = edge_list_to_parents(edges_info[2][layer:])
+                if layer > 0:
+                    np.testing.assert_equal(t_idx2, t_idx, 'Alternative tree-index reqtievel failed')
+                del t_idx2
         # Generate coverage masks
         for layer, (tree_idx, seed_mask) in enumerate(tree_idx_seed):
             print(f'Generating graph-layer {layer}')
