@@ -7,6 +7,7 @@ import pickle
 from typing import Any, Sequence, Callable, Iterable
 import numpy as np
 import numpy.typing as npt
+import build_edges
 
 
 # Minimum node-weight to keep in a layer
@@ -208,61 +209,6 @@ def filter_edge_src_mask(edge_src_mask: T_MaskArray, edge_list: T_IndexArray) ->
 #
 # Graph edge selection
 #
-def get_rel_neighbors(ndim: int, diag_lvl: int=1):
-    """All relative indices to a point neighbors"""
-    res = 1 - np.indices((3,) * ndim)           # Grid: 1, 0, -1
-    res = res[:, res.any(0)]                    # Drop the origin
-    res = res[:, :res.shape[1]//2]              # Drop opposites
-    assert (res != -res.T[..., np.newaxis]).any(1).all(), 'Opposite directions remain'
-    return res[:, np.count_nonzero(res, axis=0) <= diag_lvl+1]  # Drop higher diagonal levels
-
-def build_edge_list(alt_grid: npt.NDArray, *, distance: Callable|None=None
-                    ) -> tuple[T_IndexArray, T_IndexArray]:
-    """Get sorted list of all edges between neighbors, also return lexsort() keys for further list-merge"""
-    # Obtain neighbors of each point
-    src_idx = np.indices(alt_grid.shape)
-    src_idx = np.expand_dims(src_idx, axis=1)
-    tgt_idx = (src_idx.T + get_rel_neighbors(alt_grid.ndim).T).T
-    # Drop the edges, where target-node is out-of-bounds
-    mask = (tgt_idx.T < alt_grid.shape).T.all(0)
-    mask &= (tgt_idx >= 0).all(0)
-    src_idx = np.broadcast_to(src_idx, shape=tgt_idx.shape)[:, mask]
-    tgt_idx = tgt_idx[:, mask]
-    del mask
-
-    # Get source-node altitude and slope (or just altitude difference)
-    edge_list = np.stack((src_idx, tgt_idx), axis=1)
-    del src_idx, tgt_idx
-    node_alt = alt_grid[*edge_list]
-    # Drop the edges, involving NaN
-    mask = ~np.isnan(node_alt).any(0)
-    if not mask.all():
-        node_alt = node_alt[:, mask]
-        edge_list = edge_list[..., mask]
-    slope = node_alt[1] - node_alt[0]
-    node_alt = node_alt.min(0)
-    # Use actual slope arctan(vert / hor)
-    if distance is not None:
-        # Distance between source and target nodes (must be "flat")
-        edge_len = distance(edge_list[:,0], edge_list[:,1])
-        slope = np.arctan2(slope, edge_len)
-
-    # Swap descending edges (make all slopes positive)
-    mask = slope < 0
-    edge_list[..., mask] = edge_list[:, ::-1, mask]
-    np.testing.assert_equal(alt_grid[*edge_list[:, 0]] <= alt_grid[*edge_list[:, 1]], True,
-            'All edges must be ascending')  #TODO: CHECKME: Potential slow operation
-    slope[mask] = np.negative(slope[mask])
-
-    # Sort by descending source-node altitude
-    # For the same point, the steepest edge must come first
-    # > use lexsort() to sort by multiple keys: primary key in last column
-    lexsort_keys = np.stack((slope, node_alt))
-    alt_lexsort = np.lexsort(lexsort_keys)[::-1]
-    edge_list = edge_list[..., alt_lexsort]
-    lexsort_keys = lexsort_keys[:, alt_lexsort]
-    return edge_list, lexsort_keys
-
 def unique_mask(arr: T_IndexArray, axis: int|None=None) -> T_MaskArray:
     """Returns the mask of unique elements in an array"""
     _, unique_idx = np.unique(arr, axis=axis, return_index=True)
@@ -289,8 +235,8 @@ def select_edges(edge_list: T_IndexArray, *, node_mask: T_MaskArray=np.asarray(T
 
 def build_graph_layers(alt_grid: npt.NDArray, *, distance: Callable|None=None, max_layers: int=5
                        ) ->tuple[tuple[T_IndexArray, T_IndexArray, T_IndexArray, T_MaskArray], list[T_Graph]]:
-    """Build edge-list and multiple graph-layters"""
-    main_edge_list, _ = build_edge_list(alt_grid, distance=distance)
+    """Build edge-list and multiple graph-layers"""
+    main_edge_list, _ = build_edges.build_edge_list(alt_grid, distance=distance)
     # Convert to 1D node-indices
     main_edge_list = np.ravel_multi_index(tuple(main_edge_list), alt_grid.shape).astype(int)
     if True:    # Check if highest point(s) are NOT at source-side of edge (skip topmost)
@@ -519,7 +465,7 @@ if __name__ == '__main__':
             return visualize.figarg_create_lines((src_arr, tgt_arr)) | kwargs
 
         # All possible edges
-        edge_list, _ = build_edge_list(lla_grid[...,-1], distance=dist)
+        edge_list, _ = build_edges.build_edge_list(lla_grid[...,-1], distance=dist)
         yield create_edges(edge_list[:, 0], edge_list[:, 1],
                 name='All edges', mode='lines', visible='legendonly')
         # Main-graph

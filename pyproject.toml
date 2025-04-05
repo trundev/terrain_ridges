@@ -20,6 +20,8 @@ dev = ["pytest"]
 
 [tool.pytest.ini_options]
 pythonpath = "./terrain_ridges"
+addopts = '-m "not visualize"'  # Comment this for dev visualization
 markers = [
-    'slow: marks slow tests'
+    'slow: marks slow tests',
+    'visualize: visualize test data (for development environments)'
 ]

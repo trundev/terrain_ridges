@@ -13,10 +13,46 @@
                 "PROJ_DATA": "${workspaceRoot}/../venv/Lib/site-packages/osgeo_utils/proj",
             },
             "args": [
+                // test-cytoscape.py
+                "${workspaceRoot}/topo_graph.pickle",
+                //"${workspaceRoot}-test/N39E021-crop.tif",
+                //"${workspaceRoot}/../SRTM/SRTM3/N39E021.hgt",
+                //"${workspaceRoot}/../SRTM/SRTM1/n39_e021_1arc_v3.tif",
+                //"../out.kml",
+                //"--distance-method=geod"
+                //"-multi_layer", "14.53",
+                //"-valley",
+                //"${workspaceRoot}/../SRTM/SRTMGL1/N42E023/N42E023.SRTMGL1-crop.tif",
+                //"${workspaceRoot}/../SRTM/SRTMGL1/N39E021/N39E021.SRTMGL1-crop.tif",
+                //"--mgrid-n", //"${workspaceRoot}/../SRTM/SRTMGL1/N42E023/N42E023.SRTMGL1-crop.tif-2-mgrid_n_xy.npy",
+                //"--mgrid-n", "${workspaceRoot}/../SRTM/SRTMGL1/N42E023/N42E023.SRTMGL1-crop_s30x30.tif-1-mgrid_n_xy.npy",
+                //"--gradient", "geod",
+                //"--merge-islands", //"840",
+                //"--mapbox-style", "mapbox://styles/trundev/ckpn5fzfm05zk17rfj1oz6j2t",  //Sofia
+                //"--mapbox-style", "mapbox://styles/trundev/ckmx8ik020l6v17p6yv3dhdge", //Samothraki
+                //"--mapbox-style", "mapbox://styles/trundev/clgj7cuug006l01o1eofr9pth", //Plastiras
             ],
             "internalConsoleOptions": "openOnSessionStart",
             "stopOnEntry": false,
-            //"justMyCode": false,
-        }
+            "justMyCode": false,
+        },
+        {
+            "name": "topo_graph",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "terrain_ridges/topo_graph.py",
+            "console": "internalConsole",  // "integratedTerminal",
+            "env": {
+                "GDAL_DATA": "${workspaceRoot}/../venv/Lib/site-packages/osgeo_utils/gdal-data",
+                "PROJ_DATA": "${workspaceRoot}/../venv/Lib/site-packages/osgeo_utils/proj",
+            },
+            "args": [
+                //"${workspaceRoot}/../SRTM/SRTMGL1/N42E023/N42E023.SRTMGL1-crop.tif",
+                //"${workspaceRoot}/../SRTM/SRTMGL1/N42E023.SRTMGL1.hgt.zip",
+                //"${workspaceRoot}/../SRTM/SRTM3/N42E023.hgt",
+                "${workspaceRoot}/../SRTM/SRTM1/Sicily-Etna/Etna-tiny.tif",
+                //"${workspaceRoot}/../SRTM/SRTM1/n39_e021_1arc_v3.tif", // largest expected file (3601x3601 ~13MP)
+            ]
+        },
     ]
 }
