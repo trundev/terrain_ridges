@@ -15,7 +15,7 @@ VALID_NEIGHBOR_DIRS = numpy.array(
 
 # Keep the seed away from the edges
 SEED_INFLATE = 1
-# Distance caclulation methods, '--distance-method' option:
+# Distance calculation methods, '--distance-method' option:
 DISTANCE_METHODS = {
     'draft': gdal_utils.draft_distance,     # Draft: use pre-calculated pixel size by tm_distance for all pixels
     'tm': gdal_utils.tm_distance,           # Transverse Mercator: use TM origin at the center of raster data

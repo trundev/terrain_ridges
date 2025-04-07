@@ -23,7 +23,7 @@ def write_arr(arr, x_y, val):
     elif x_y.ndim < 2 or arr.ndim <= x_y.shape[-1]:
         arr[tuple(x_y.T)] = val.T   # Performance optimization
     else:
-        # Double-transpose trick does not work when 'arr' has extra dimentions
+        # Double-transpose trick does not work when 'arr' has extra dimensions
         x_y = numpy.moveaxis(x_y, -1, 0)
         arr[tuple(x_y)] = val
 
@@ -32,7 +32,7 @@ def read_arr(arr, x_y):
     # Avoid numpy "Advanced Indexing"
     if x_y.ndim < 2 or arr.ndim <= x_y.shape[-1]:
         return arr[tuple(x_y.T)].T  # Performance optimization
-    # Double-transpose trick does not work when 'arr' has extra dimentions
+    # Double-transpose trick does not work when 'arr' has extra dimensions
     x_y = numpy.moveaxis(x_y, -1, 0)
     return arr[tuple(x_y)]
 
@@ -70,7 +70,7 @@ class gdal_dataset:
         # Note that GetGeoTransform() returns translation components at index 0
         x_y = numpy.concatenate((numpy.ones(x_y.shape[:-1] + (1,)), x_y), axis=-1)
 
-        # This is matmul() but x_y is always treated as a set of one-dimentional vectors
+        # This is matmul() but x_y is always treated as a set of one-dimensional vectors
         x_y = x_y[...,numpy.newaxis,:]
         return (self.xform * x_y).sum(-1)
 
@@ -133,8 +133,8 @@ def _get_dtype(band):
 
 class gdal_dem_band(gdal_dataset):
     """"GDAL DEM band representation"""
-    dem_buf = None
-    shape = None
+    dem_buf: numpy.ndarray
+    shape: tuple[int, ...]
 
     def __init__(self, dataset, i=None):
         super(gdal_dem_band, self).__init__(dataset)
@@ -200,7 +200,7 @@ class gdal_dem_band(gdal_dataset):
         coords = numpy.concatenate((coords, numpy.ones(coords.shape[:-1] + (1,))), axis=-1)
         # Invert the transformation matrix
         xform = numpy.linalg.inv(xform)
-        # This is matmul() but coords is always treated as a set of one-dimentional vectors
+        # This is matmul() but coords is always treated as a set of one-dimensional vectors
         # See affine_xform()
         coords = coords[...,numpy.newaxis,:]
         return (xform * coords).sum(-1)[...,:-1]
@@ -243,6 +243,8 @@ class gdal_dem_band(gdal_dataset):
 #
 class tm_transform:
     """Convert to Transverse Mercator projection"""
+    dem_band: gdal_dem_band
+
     def __init__(self, dem_band):
         self.dem_band = dem_band
         self.tm_xform = None
@@ -265,6 +267,8 @@ class tm_transform:
 #
 class geod_distance:
     """Distance calculation by using pyproj.Geod.inv()"""
+    dem_band: gdal_dem_band
+
     def __init__(self, gdal_dem_band):
         self.dem_band = gdal_dem_band
         srs = gdal_dem_band.get_spatial_ref()
@@ -288,8 +292,7 @@ class geod_distance:
         lonlat = lonlat.reshape([*lonlat.shape[:-2], -1]).T
         _, _, dist = self.geod.inv(*lonlat)
         # The pyproj.Geod.inv() distance can be a scalar
-        if not numpy.isscalar(dist):
-            dist = dist.T
+        dist = numpy.asarray(dist).T
         # Adjust distance with the altitude displacement
         return numpy.sqrt(dist*dist + disp*disp)
 

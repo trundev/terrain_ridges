@@ -99,7 +99,7 @@ jobs:
         echo "SRC_DEM=$SRC_DEM" >> ${env:GITHUB_ENV}
         echo "SRC_DEM set to $SRC_DEM"
 
-    - name: Merge source DEMs (if mutiple)
+    - name: Merge source DEMs (if multiple)
       if: contains( env.SRC_DEM, ', ')
       run: |
         $SRC_DEM = "${{ env.SRC_DEM }}".Split(",").Trim()
