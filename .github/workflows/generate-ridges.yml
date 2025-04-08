@@ -1,0 +1,156 @@
+name: Validate ridge generator
+
+on:
+  workflow_dispatch:
+    inputs:
+      SRC_URL:
+        description: "URL(s) to download source DEM (comma separated)"
+        required: true
+        default: ""
+      DST_EXT:
+        description: "Destination file extension/format"
+        required: false
+        default: ".kmz"
+      TOOL_OPTIONS:
+        description: "Extra tool options (like -valley)"
+        required: false
+        default: ""
+      GDALWARP_OPTIONS:
+        description: "Modify the source via gdalwarp, like (-ts <w> <h>, -te <xmin> <ymin> <xmax> <ymax>)"
+        required: false
+        default: ""
+      REBUILD_CACHE:
+        description: "Force rebuild of cached GDAL wheel package"
+        required: false
+        default: "false"
+  push:
+    branches: [ master, '**-test' ]
+  pull_request:
+
+env:
+  SRC_URL: "${{ github.event.inputs.SRC_URL }}"
+  DST_EXT: "${{ github.event.inputs.DST_EXT }}"
+  TOOL_OPTIONS: "${{ github.event.inputs.TOOL_OPTIONS }}"
+  GDALWARP_OPTIONS: "${{ github.event.inputs.GDALWARP_OPTIONS }}"
+  DEF_SRC_URL: "https://www.iea-software.com/ftp/Emeraldv6/Geography/Eurasia/Elevations/SRTM3/N39E021.hgt.zip"
+  DEF_DST_EXT: ".kml"
+  DEF_GDALWARP_OPTIONS: ""  # Complete HGT-file (1201x1201)
+
+jobs:
+  generate:
+    runs-on: windows-latest
+
+    env:
+      SRC_DEM_DIR: "DEM"
+      MOD_SRC_POSTFIX: "-mod.tif"
+      MERGE_SRC_POSTFIX: "-merge.tif"
+      MERGE_OPTIONS: "-a_nodata -32768"
+      REF_RESULT_DIR: "ref_results"
+      DEM_EXTENSIONS: ".dem, .hgt, .tif, .tiff"
+
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+    - name: Default source DEM (on push/pull_request event)
+      if: env.SRC_URL == ''
+      run: |
+        echo "SRC_URL=${{ env.DEF_SRC_URL }}" >> ${env:GITHUB_ENV}
+        echo "DST_EXT=${{ env.DEF_DST_EXT }}" >> ${env:GITHUB_ENV}
+        echo "GDALWARP_OPTIONS=${{ env.DEF_GDALWARP_OPTIONS }}" >> ${env:GITHUB_ENV}
+
+    - uses: actions/checkout@v4
+
+    - name: Set up Python 3.13
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.13'
+
+    - name: Set up GDAL
+      uses: trundev/setup-gdal@main
+      id: setup-gdal
+      with:
+        rebuild-cache: ${{ github.event.inputs.REBUILD_CACHE }}
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        if (Test-Path requirements.txt) {
+          pip install -r requirements.txt
+        } else {
+          pip install numpy gdal pyproj
+        }
+
+    - name: Download source DEM
+      id: download-dem
+      uses: ./.github/download-data
+      with:
+        source-urls: ${{ env.SRC_URL }}
+        unpack-sources: true
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        UNPACK_DIR: ${{ env.SRC_DEM_DIR }}
+        UNPACK_EXTENSIONS: ${{ env.DEM_EXTENSIONS }}
+
+    - name: Set environment for ${{ steps.download-dem.outputs.source-names }}
+      run: |
+        $SRC_DEM = "${{ steps.download-dem.outputs.download-paths }}"
+        echo "SRC_DEM=$SRC_DEM" >> ${env:GITHUB_ENV}
+        echo "SRC_DEM set to $SRC_DEM"
+
+    - name: Merge source DEMs (if multiple)
+      if: contains( env.SRC_DEM, ', ')
+      run: |
+        $SRC_DEM = "${{ env.SRC_DEM }}".Split(",").Trim()
+        $MOD_SRC = Get-Item $SRC_DEM[0]
+        $MOD_SRC = Join-path $MOD_SRC.Directory ($MOD_SRC.BaseName + "${{ env.MERGE_SRC_POSTFIX }}")
+        echo "gdal_merge.py ${{ env.MERGE_OPTIONS }} $SRC_DEM -o $MOD_SRC"
+        python -m osgeo_utils.gdal_merge ${{ env.MERGE_OPTIONS }} $SRC_DEM -o $MOD_SRC
+        if ($LASTEXITCODE) {exit $LASTEXITCODE}
+
+        $MOD_SRC = Get-Item $MOD_SRC
+        echo "SRC_DEM=$MOD_SRC" >> ${env:GITHUB_ENV}
+        echo "SRC_DEM changed to $MOD_SRC"
+
+    - name: Modify/crop source DEM
+      if: env.GDALWARP_OPTIONS
+      run: |
+        $MOD_SRC = Get-Item ${{ env.SRC_DEM }}
+        $MOD_SRC = Join-path $MOD_SRC.Directory ($MOD_SRC.BaseName + "${{ env.MOD_SRC_POSTFIX }}")
+        echo "gdalwarp ${{ env.GDALWARP_OPTIONS }} ${{ env.SRC_DEM }} $MOD_SRC"
+        ${{ steps.setup-gdal.outputs.utils-path }}/apps/gdalwarp ${{ env.GDALWARP_OPTIONS }} ${{ env.SRC_DEM }} $MOD_SRC
+        if ($LASTEXITCODE) {exit $LASTEXITCODE}
+
+        $MOD_SRC = Get-Item $MOD_SRC
+        echo "SRC_DEM=$MOD_SRC" >> ${env:GITHUB_ENV}
+        echo "SRC_DEM changed to $MOD_SRC"
+
+    - name: Select DST_NAME, get source DEM info
+      run: |
+        $SRC_DEM = Get-Item ${{ env.SRC_DEM }}
+        $DST_NAME = $SRC_DEM.Name + "${{ env.DST_EXT }}"
+        echo "DST_NAME=$DST_NAME" >> ${env:GITHUB_ENV}
+        echo "DST_NAME set to $DST_NAME"
+
+        $REF_NAME = Join-Path ${{ env.REF_RESULT_DIR }} $DST_NAME
+        if ( Test-Path $REF_NAME) {
+          echo "REF_NAME=$REF_NAME" >> ${env:GITHUB_ENV}
+          echo "REF_NAME set to $REF_NAME"
+        }
+
+        python -m osgeo_utils.samples.gdalinfo ${{ env.SRC_DEM }}
+
+    - name: Generate ridges
+      run: python ridges.py ${{ env.TOOL_OPTIONS }} ${{ env.SRC_DEM }} ${{ env.DST_NAME }}
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: ${{ env.DST_NAME }}
+        path: |
+          ${{ env.DST_NAME }}
+          ${{ env.SRC_DEM_DIR }}/*.npy
+
+    - name: Validate result
+      if: env.REF_NAME
+      run: git diff --no-index ${{ env.DST_NAME }} ${{ env.REF_NAME }}

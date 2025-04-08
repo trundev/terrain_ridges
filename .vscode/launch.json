@@ -3,15 +3,14 @@
     "configurations": [
         {
             "name": "Python",
-            "type": "python",
+            "type": "debugpy",
             "request": "launch",
             "program": "${file}",
             "console": "internalConsole",
             "env": {
-                // Use a GIS SDK release from https://gisinternals.com/sdk.php
-                "Path": "${workspaceRoot}/../gdal-release/release-1930-x64-dev/release-1930-x64/bin;${env:Path}",
-                "GDAL_DRIVER_PATH": "${workspaceRoot}/../gdal-release/release-1930-x64-dev/release-1930-x64/bin/gdal/plugins",
-                "PROJ_LIB": "${workspaceRoot}/../gdal-release/release-1930-x64-dev/release-1930-x64/bin/proj7/share",
+                //"Path": "${workspaceRoot}/../venv/Lib/site-packages/osgeo",
+                "GDAL_DATA": "${workspaceRoot}/../venv/Lib/site-packages/osgeo_utils/gdal-data",
+                "PROJ_DATA": "${workspaceRoot}/../venv/Lib/site-packages/osgeo_utils/proj",
             },
             "args": [
             ],
