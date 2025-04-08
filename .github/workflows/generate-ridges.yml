@@ -1,4 +1,4 @@
-name: Validate ridge generator
+name: Ridge generator
 
 on:
   workflow_dispatch:
@@ -23,18 +23,12 @@ on:
         description: "Force rebuild of cached GDAL wheel package"
         required: false
         default: "false"
-  push:
-    branches: [ master, '**-test' ]
-  pull_request:
 
 env:
   SRC_URL: "${{ github.event.inputs.SRC_URL }}"
   DST_EXT: "${{ github.event.inputs.DST_EXT }}"
   TOOL_OPTIONS: "${{ github.event.inputs.TOOL_OPTIONS }}"
   GDALWARP_OPTIONS: "${{ github.event.inputs.GDALWARP_OPTIONS }}"
-  DEF_SRC_URL: "https://www.iea-software.com/ftp/Emeraldv6/Geography/Eurasia/Elevations/SRTM3/N39E021.hgt.zip"
-  DEF_DST_EXT: ".kml"
-  DEF_GDALWARP_OPTIONS: ""  # Complete HGT-file (1201x1201)
 
 jobs:
   generate:
@@ -45,7 +39,6 @@ jobs:
       MOD_SRC_POSTFIX: "-mod.tif"
       MERGE_SRC_POSTFIX: "-merge.tif"
       MERGE_OPTIONS: "-a_nodata -32768"
-      REF_RESULT_DIR: "ref_results"
       DEM_EXTENSIONS: ".dem, .hgt, .tif, .tiff"
 
     defaults:
@@ -53,13 +46,6 @@ jobs:
         shell: pwsh
 
     steps:
-    - name: Default source DEM (on push/pull_request event)
-      if: env.SRC_URL == ''
-      run: |
-        echo "SRC_URL=${{ env.DEF_SRC_URL }}" >> ${env:GITHUB_ENV}
-        echo "DST_EXT=${{ env.DEF_DST_EXT }}" >> ${env:GITHUB_ENV}
-        echo "GDALWARP_OPTIONS=${{ env.DEF_GDALWARP_OPTIONS }}" >> ${env:GITHUB_ENV}
-
     - uses: actions/checkout@v4
 
     - name: Set up Python 3.13
@@ -74,16 +60,30 @@ jobs:
         rebuild-cache: ${{ github.event.inputs.REBUILD_CACHE }}
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        if (Test-Path requirements.txt) {
-          pip install -r requirements.txt
-        } else {
-          pip install numpy gdal pyproj
-        }
+    - name: Install module and dependencies
+      run: python -m pip install --upgrade pip .
 
-    - name: Download source DEM
+    - name: Initial job summary
+      run: |
+        "### Inputs
+        - SRC_URL: ${{ env.SRC_URL }}
+        - DST_EXT: ${{ env.DST_EXT }}
+        - TOOL_OPTIONS: ${{ env.TOOL_OPTIONS }}
+        - GDALWARP_OPTIONS: ${{ env.GDALWARP_OPTIONS }}
+        - REBUILD_CACHE: ${{ github.event.inputs.REBUILD_CACHE }}
+        " >> $env:GITHUB_STEP_SUMMARY
+
+        "<details><summary>Installed packages</summary>
+
+          | Package  | Version |
+          |----------|---------|
+        $(pip freeze | ForEach-Object {
+          "  | $($_ -replace '==', ' | ' -replace ' @ ', ' | ') |"} |
+          Join-String -Separator "`n")
+        </details>
+        " >> $env:GITHUB_STEP_SUMMARY
+
+    - name: Download source DEMs
       id: download-dem
       uses: ./.github/download-data
       with:
@@ -100,7 +100,7 @@ jobs:
         echo "SRC_DEM set to $SRC_DEM"
 
     - name: Merge source DEMs (if multiple)
-      if: contains( env.SRC_DEM, ', ')
+      if: contains( env.SRC_DEM, ',')
       run: |
         $SRC_DEM = "${{ env.SRC_DEM }}".Split(",").Trim()
         $MOD_SRC = Get-Item $SRC_DEM[0]
@@ -133,24 +133,31 @@ jobs:
         echo "DST_NAME=$DST_NAME" >> ${env:GITHUB_ENV}
         echo "DST_NAME set to $DST_NAME"
 
-        $REF_NAME = Join-Path ${{ env.REF_RESULT_DIR }} $DST_NAME
-        if ( Test-Path $REF_NAME) {
-          echo "REF_NAME=$REF_NAME" >> ${env:GITHUB_ENV}
-          echo "REF_NAME set to $REF_NAME"
-        }
+        "<details><summary>${{ env.SRC_DEM }}</summary>
 
-        python -m osgeo_utils.samples.gdalinfo ${{ env.SRC_DEM }}
+        " + '```' >> $env:GITHUB_STEP_SUMMARY
+        python -m osgeo_utils.samples.gdalinfo ${{ env.SRC_DEM }} >> $env:GITHUB_STEP_SUMMARY
+        '```
+        </details>
+        ' >> $env:GITHUB_STEP_SUMMARY
 
     - name: Generate ridges
-      run: python ridges.py ${{ env.TOOL_OPTIONS }} ${{ env.SRC_DEM }} ${{ env.DST_NAME }}
+      run: python terrain_ridges/ridges.py ${{ env.TOOL_OPTIONS }} ${{ env.SRC_DEM }} ${{ env.DST_NAME }}
 
     - uses: actions/upload-artifact@v4
+      id: artifact-upload
       with:
         name: ${{ env.DST_NAME }}
         path: |
           ${{ env.DST_NAME }}
           ${{ env.SRC_DEM_DIR }}/*.npy
 
-    - name: Validate result
-      if: env.REF_NAME
-      run: git diff --no-index ${{ env.DST_NAME }} ${{ env.REF_NAME }}
+    - name: Update job summary
+      run: |
+        "### Result
+        - artifact-url: ${{ steps.artifact-upload.outputs.artifact-url }}" >> $env:GITHUB_STEP_SUMMARY
+
+        $artifact = Invoke-WebRequest "${{ github.api_url }}/repos/${{ github.repository }}/actions/artifacts/${{ steps.artifact-upload.outputs.artifact-id }}"
+        $artifact = ConvertFrom-Json $artifact.Content
+        "- archive_download_url: $($artifact.archive_download_url)
+        " >> $env:GITHUB_STEP_SUMMARY

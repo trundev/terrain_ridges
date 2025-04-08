@@ -28,7 +28,7 @@ inputs:
     required: false
     type: string
   UNPACK_EXTENSIONS:
-    description: "Comma separated list of extensions to select source-files (if multiple), when 'unpack-sources' is true"
+    description: "Comma separated list of extensions to select source-files, when 'unpack-sources' is true"
     default: ".kml, .kmz, .geojson, .gml, .csv, .shp, .gpx"
     required: false
     type: list
@@ -70,12 +70,14 @@ runs:
         # Select file-name: from HTTP response or URL
         $cdips = $data.Headers['Content-Disposition']
         if ( $cdips ) {
+          echo "Content-Disposition: $cdips"
           $fname = $cdips.Split(';').Trim()
-          $fname = $fname.Where({$_ -like 'filename=*'}).Split('=')[1]
+          $fname = $fname.Where({$_ -like 'filename=*'}).Split('=')[1].Trim('"')
         } else {
           $fname = ([uri]$url).Segments[-1]
         }
         $fname = "${{ inputs.DOWNLOAD_DIR }}/$fname"
+        echo "Writing $($data.Content.Length) bytes to $fname..."
         Set-Content $fname $data.Content -AsByteStream
         $SRC_FILES += Get-Item $fname
       }
@@ -88,13 +90,14 @@ runs:
           Expand-Archive $zip -DestinationPath "${{ inputs.UNPACK_DIR }}"
         }
 
-        $SRC_FILES = @(Get-ChildItem "${{ inputs.UNPACK_DIR }}")
+        $SRC_FILES = Get-ChildItem -File "${{ inputs.UNPACK_DIR }}"
         # Select just the OGR-files, if multiple files were extracted
-        if ($SRC_FILES.Length -gt $SRC_URLS.Length -and "${{ inputs.UNPACK_EXTENSIONS }}") {
-          $SRC_FILES = @($SRC_FILES | Where-Object {
+        if ("${{ inputs.UNPACK_EXTENSIONS }}") {
+          $SRC_FILES = $SRC_FILES | Where-Object {
               $_.Extension -in "${{ inputs.UNPACK_EXTENSIONS }}".Split(",").Trim()
-          })
+          }
           echo "# Unpacked files filtered to: $SRC_FILES"
+          $SRC_FILES_NAME = $SRC_FILES.Name -join ","
         }
       }
       $SRC_FILES = $SRC_FILES -join ","

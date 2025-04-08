@@ -36,9 +36,7 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Install module
-      run: |
-        python -m pip install --upgrade pip pytest
-        pip install -r requirements.txt
+      run: python -m pip install --upgrade pip .[dev]
 
     - name: Download source DEM
       id: download-dem
@@ -53,5 +51,4 @@ jobs:
     - name: Run PyTest
       env:
         SRC_DEM: ${{ steps.download-dem.outputs.download-paths }}
-        PYTHONPATH: ${{ github.workspace }}
       run: pytest -v --capture=tee-sys --ignore=GDAL~

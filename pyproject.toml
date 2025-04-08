@@ -1,0 +1,25 @@
+[project]
+name = "terrain_ridges"
+version = "0.1"     # Keep in sync with terrain_ridges/__init__.py:__version__
+description = "Python geographic terrain ridge/valley generator"
+readme = "README.md"
+requires-python = ">=3.11"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    'Topic :: Scientific/Engineering',
+    'Topic :: Scientific/Engineering :: GIS',
+    "Development Status :: 3 - Alpha",
+    "Operating System :: OS Independent",
+]
+license-files = ["./LICENSE"]
+dependencies = ["GDAL", "numpy", "pyproj"]
+
+[project.optional-dependencies]
+# Development deps, installed through `pip install .[dev]`
+dev = ["pytest"]
+
+[tool.pytest.ini_options]
+pythonpath = "./terrain_ridges"
+markers = [
+    'slow: marks slow tests'
+]

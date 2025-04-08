@@ -127,10 +127,9 @@ jobs:
           ${{ env.UNPACK_DIR }}/*${{ env.DST_EXT }}
 
     - name: Update job summary
-      working-directory: tools/obf_generator
       run: |
         "### Result" >> $env:GITHUB_STEP_SUMMARY
-        ForEach ($dst in Get-Item *${{ env.DST_EXT }}) {
+        ForEach ($dst in Get-Item ${{ env.DOWNLOAD_DIR }}/*${{ env.DST_EXT }},${{ env.UNPACK_DIR }}*/*${{ env.DST_EXT }}) {
           "<details><summary>$($dst.Name)</summary>
 
           " + '```' >> $env:GITHUB_STEP_SUMMARY

@@ -2,7 +2,7 @@
 import os
 import argparse
 import pytest
-import ridges
+from terrain_ridges import ridges
 
 
 TEST_DIR = os.path.dirname(__file__)
@@ -19,6 +19,7 @@ def compare_kmls(test_path, ref_path):
         ref_result = fd.read()
     return test_result == ref_result
 
+@pytest.mark.slow
 @pytest.mark.parametrize('direntry', (
         entry for entry in os.scandir(SRC_DEM_DIR) if entry.is_file()),
         ids=lambda e: e.name)
