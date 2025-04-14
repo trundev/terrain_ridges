@@ -17,9 +17,12 @@ dependencies = ["GDAL", "numpy", "pyproj"]
 [project.optional-dependencies]
 # Development deps, installed through `pip install .[dev]`
 dev = ["pytest"]
+visualize = ["plotly"]
 
 [tool.pytest.ini_options]
 pythonpath = "./terrain_ridges"
+addopts = '-m "not visualize"'  # Comment this for dev visualization
 markers = [
-    'slow: marks slow tests'
+    'slow: marks slow tests',
+    'visualize: visualize test data (for development environments)',
 ]
