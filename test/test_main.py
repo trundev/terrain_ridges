@@ -2,14 +2,11 @@
 import os
 import argparse
 import pytest
+from .conftest import REF_RESULT_DIR
 from terrain_ridges import ridges
 
 
-TEST_DIR = os.path.dirname(__file__)
-SRC_DEM_DIR = os.path.join(TEST_DIR, 'DEM')
-REF_RESULT_DIR = os.path.join(TEST_DIR, 'ref_results')
 RESULT_NAME = os.environ.get('DST_NAME', 'res.kml')
-
 
 def compare_kmls(test_path, ref_path):
     """Compare test KML against reference one"""
@@ -19,17 +16,13 @@ def compare_kmls(test_path, ref_path):
         ref_result = fd.read()
     return test_result == ref_result
 
-@pytest.mark.slow
-@pytest.mark.parametrize('direntry', (
-        entry for entry in os.scandir(SRC_DEM_DIR) if entry.is_file()),
-        ids=lambda e: e.name)
-def test_real_dem(direntry: os.DirEntry):
+def test_real_dem(dem_file_path: str):
     """Run ridges.main() for a DEM-file"""
 
     # Tweak internal behavior
     ridges.ASSERT_LEVEL = 3
     args = argparse.Namespace(
-            src_dem_file=direntry.path,
+            src_dem_file=dem_file_path,
             dst_ogr_file=RESULT_NAME,
             dst_format=None,
             valleys=False,
@@ -52,7 +45,7 @@ def test_real_dem(direntry: os.DirEntry):
     assert ret == 0, f'ridges.main() failed, code {ret}'
 
     # Compare to reference result (if any)
-    ref_path = os.path.join(REF_RESULT_DIR, direntry.name + '.kml')
+    ref_path = os.path.join(REF_RESULT_DIR, os.path.basename(dem_file_path) + '.kml')
     if not os.path.exists(ref_path):
         pytest.xfail(f'Missing reference result: {ref_path}')
 

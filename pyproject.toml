@@ -16,7 +16,7 @@ dependencies = ["GDAL", "numpy", "pyproj"]
 
 [project.optional-dependencies]
 # Development deps, installed through `pip install .[dev]`
-dev = ["pytest"]
+dev = ["pytest", "pytest-benchmark"]
 visualize = ["plotly", "dash", "dash-cytoscape", "requests"]
 
 [tool.pytest.ini_options]
