@@ -154,9 +154,28 @@ def test_propagate_mask2(altitude_graph):
     np.testing.assert_equal(leaf_mask & sink_mask, False, 'Leaf and sink nodes must not overlap')
     np.testing.assert_equal(leaf_mask & loop_mask, False, 'Leaf and loop nodes must not overlap')
 
+def isolate_subgraphs_test(graph_edges: T_Graph, *args, **kwargs):
+    """isolate_subgraphs() wrapper to fully test its result, esp. against safe one"""
+    parent_ids = topo_graph.isolate_subgraphs(graph_edges, *args, **kwargs)
+    parent_edges = parent_ids[*graph_edges[..., topo_graph.valid_node_edges(graph_edges)]]
+    np.testing.assert_equal(parent_edges[0], parent_edges[1],
+                            'Edges can not cross between sub-graphs')
+    assert parent_ids.min() in (0, -1), 'Parent IDs must start from 0 or -1'
+    uniq_ids = np.unique(parent_ids)
+    assert uniq_ids.size == uniq_ids.max() - uniq_ids.min() + 1, 'Parent IDs must be consecutive'
+
+    # Compare against result from reference/safe implementation
+    ref_res = topo_graph.isolate_subgraphs_safe(graph_edges, *args, **kwargs)
+    # Map `parent_ids` values to `ref_res`
+    # (arrays may not be identical, but IDs must have 1-to-1 correspondence)
+    _, uniq_idx, uniq_inv = np.unique(parent_ids, return_index=True, return_inverse=True)
+    adj_res = ref_res.flat[uniq_idx][uniq_inv]
+    np.testing.assert_equal(adj_res, ref_res, 'isolate_subgraphs() result do NOT match reference')
+    return parent_ids
+
 def test_isolate_subgraphs(complete_graph):
     """Test sub-graph identification"""
-    parent_ids = topo_graph.isolate_subgraphs(complete_graph)
+    parent_ids = isolate_subgraphs_test(complete_graph)
     np.testing.assert_equal(parent_ids, 0,
                             'All nodes must have the same parent (graph is complete)')
 
@@ -166,7 +185,7 @@ def test_isolate_subgraphs(complete_graph):
 
     # Use larger node-grid shape
     node_shape = np.asarray(parent_ids.shape)
-    parent_ids = topo_graph.isolate_subgraphs(graph_edges, node_shape=node_shape + 1)
+    parent_ids = isolate_subgraphs_test(graph_edges, node_shape=node_shape + 1)
     assert np.count_nonzero(parent_ids == 0) == node_shape.prod(), \
             'All used node must have the same parent'
     assert np.count_nonzero(parent_ids == -1) == parent_ids.size - node_shape.prod(), \
@@ -175,7 +194,7 @@ def test_isolate_subgraphs(complete_graph):
 def test_isolate_subgraphs2(altitude_graph, altitude_grid):
     """Test sub-graph identification on altitude based graph"""
     # Run on initial edge-list
-    parent_id = topo_graph.isolate_subgraphs(altitude_graph)
+    parent_id = isolate_subgraphs_test(altitude_graph)
     if altitude_grid.ndim > 1:
         np.testing.assert_equal(parent_id, np.where(np.isfinite(altitude_grid), 0, -1),
                                 'Initial edge-list, must have single sub-graph')
@@ -185,76 +204,96 @@ def test_isolate_subgraphs2(altitude_graph, altitude_grid):
 
     # Run on filtered tree-graph
     edge_mask = topo_graph.filter_treegraph(altitude_graph)
-    tree_edges = altitude_graph[..., edge_mask]
-    parent_id = topo_graph.isolate_subgraphs(tree_edges)
-    parent_edges = parent_id[*tree_edges]
-    np.testing.assert_equal(parent_edges[0], parent_edges[1],
-                            'Edges can not cross between sub-graphs')
+    parent_id = isolate_subgraphs_test(altitude_graph[..., edge_mask])
 
 #
-# Legacy graph-tree implementation
+# Various graph shapes with expected results
 #
-type T_TreeGraph = T_IndexArray
-def graph_to_edge_list(tgt_nodes: T_TreeGraph, *, self_edges: bool=False) -> T_Graph:
-    """Convert legacy tree-graph to edge list style graph
-
-    Parameters
-    ----------
-    tgt_nodes : (target-node-idx, node-idx0, node-idx1, ...) ndarray of int
-        Source tree-graph
-    self_edges : bool
-        Create self-pointing edges (where target-node is the same as node)
-
-    Returns
-    -------
-    graph_edges : (node-idx, 2, edge-idx) ndarray of int
-    """
-    grid_shape = tgt_nodes.shape[1:]
-    # `self_edges == False` - skip edges, where target and source nodes are the same
-    normal_mask = (tgt_nodes != np.indices(grid_shape)).any(0)
-    mask = np.broadcast_to(True, tgt_nodes.shape[1:]) if self_edges else normal_mask
-    return np.stack((np.nonzero(mask), tgt_nodes[:, mask]), axis=1)
-
-def wrap_isolate_subgraphs(tgt_nodes: T_IndexArray):
-    """Wrapper of isolate_subgraphs() to use legacy tree-graph structure"""
-    graph_edges = graph_to_edge_list(tgt_nodes, self_edges=True)
-    parent_ids = topo_graph.isolate_subgraphs(graph_edges)
-    return graph_edges, parent_ids
-
-def test_combined():
-    """Test identification of various tree-types"""
-    #
+@pytest.mark.parametrize('test_data', (
     # Various graph shapes
-    #
-    tgt_nodes = np.arange(18) + 1
-    tgt_nodes[8] = 0        # 0..8: O-shape / circle
-    tgt_nodes[12] = 10      # 9..12: 9-shape
-    tgt_nodes[[14,16]] = 16 # 13..16: 1-shape
-    tgt_nodes[17] = 17      # 17..17: .-shape / leaf-root
-    tgt_nodes = tgt_nodes[np.newaxis, :]
-    graph_edges, parent_ids = wrap_isolate_subgraphs(tgt_nodes)
-    np.testing.assert_equal(parent_ids,  [0,0,0,0,0,0,0,0,0, 1,1,1,1, 2,2,2,2, 3])
-    loop_mask = topo_graph.propagate_mask(graph_edges, True)
-    loop_mask = topo_graph.propagate_mask(graph_edges[:, ::-1], loop_mask)
-    np.testing.assert_equal(loop_mask, [1,1,1,1,1,1,1,1,1, 0,1,1,1, 0,0,0,1, 1])
-    np.testing.assert_equal(topo_graph.isolate_graph_sinks(graph_edges), False)
-    leaf_mask = topo_graph.isolate_graph_sinks(graph_edges[:, ::-1])
-    np.testing.assert_equal(leaf_mask, [0,0,0,0,0,0,0,0,0, 1,0,0,0, 1,0,1,0, 0])
-
-    #
+    dict(graph_edges=np.array([
+            # 0..8: O-shape / circle
+            [0, 1], [ 1, 2], [2, 3], [3, 4], [4, 5], [5, 6], [6, 7], [7, 8], [8, 0],
+            # 9..12: 9-shape
+            [9, 10], [10, 11], [11, 12], [12, 10],
+            # 13..16: 1-shape
+            [13, 14], [14, 16], [15, 16], [16, 16],
+            # 17..17: .-shape / leaf-root
+            [17, 17]], dtype=int).T[np.newaxis],
+        parent_ids=[0,0,0,0,0,0,0,0,0, 1,1,1,1, 2,2,2,2, 3],
+        loop_mask=[1,1,1,1,1,1,1,1,1, 0,1,1,1, 0,0,0,1, 1],
+        sink_mask=False,
+        leaf_mask=[0,0,0,0,0,0,0,0,0, 1,0,0,0, 1,0,1,0, 0]),
     # Single graph-tree with loop
-    #
-    tgt_nodes = np.arange(16) + 1
-    tgt_nodes[14] = 8       # 8..14: loop
-    tgt_nodes[15] = 8       # 15: single node branch, base 8
-    tgt_nodes[4] = 14       # 0..4: 5 node branch, base 14
-    # leftover:             # 5..7: 3 node branch, base 8
-    tgt_nodes = tgt_nodes[np.newaxis, :]
-    graph_edges, parent_ids = wrap_isolate_subgraphs(tgt_nodes)
-    np.testing.assert_equal(parent_ids,  0)
+    dict(graph_edges=np.array([
+            # 0..4: 5 node branch, base 14
+            [0, 1], [1, 2], [2, 3], [3, 4], [4, 14],
+            # 5..7: 3 node branch, base 8
+            [5, 6], [6, 7], [7, 8],
+            # 8..14: loop
+            [8, 9], [9, 10], [10, 11], [11, 12], [12, 13], [13, 14], [14,  8],
+            # 15: single node branch, base 8
+            [15,  8]], dtype=int).T[np.newaxis],
+        parent_ids=0,
+        loop_mask=[0,0,0,0,0,0,0,0, 1,1,1,1,1,1,1, 0],
+        sink_mask=False,
+        leaf_mask=[1,0,0,0,0,1,0,0, 0,0,0,0,0,0,0, 1]),
+    # Even more generic sub-graphs (2D)
+    dict(graph_edges=np.array([
+            # Straight line from leaf (0,0) to root (0,2)
+            [(0,0), (0,1)], [(0,1), (0,2)],
+            # Loop with incoming and outgoing branches
+            [(1,0), (1,1)], [(1,1), (1,0)], # loop
+            [(1,1), (1,2)], [(1,2), (1,3)], # root (1,3)
+            [(1,5), (1,4)], [(1,4), (1,0)], # leaf (1,5)
+            # Nodes with multiple targets from leaf (2,0)
+            [(2,0), (2,1)], [(2,1), (2,2)], [(2,2), (2,3)], # root (2,3)
+            [(2,1), (2,4)],                 # root (2,4)
+            [(2,2), (2,5)], [(2,5), (2,6)], # root (2,6)
+            # Invalid source-node to root (3,1)
+            [(3,-1), (3,0)], [(3,0), (3,1)],
+            # Invalid target-node from leaf (4,0)
+            [(4,0), (4,1)], [(4,1), (4,-1)],
+            # Invalid source and target-nodes
+            [(-1,-1), (5,-1)],
+        ], dtype=int).T,
+        parent_ids=[
+            (0,  0,  0, -1, -1, -1, -1),
+            (1,  1,  1,  1,  1,  1, -1),
+            (2,  2,  2,  2,  2,  2,  2),
+            (3,  3, -1, -1, -1, -1, -1),
+            (4,  4, -1, -1, -1, -1, -1),
+            (-1,-1, -1, -1, -1, -1, -1)],
+        loop_mask=[
+            (0, 0, 0, 0, 0, 0, 0),
+            (1, 1, 0, 0, 0, 0, 0),
+            (0, 0, 0, 0, 0, 0, 0),
+            (0, 0, 0, 0, 0, 0, 0),
+            (0, 0, 0, 0, 0, 0, 0),
+            (0, 0, 0, 0, 0, 0, 0)],
+        sink_mask=[
+            (0, 0, 1, 0, 0, 0, 0),
+            (0, 0, 0, 1, 0, 0, 0),
+            (0, 0, 0, 1, 1, 0, 1),
+            (0, 1, 0, 0, 0, 0, 0),
+            (0, 0, 0, 0, 0, 0, 0),
+            (0, 0, 0, 0, 0, 0, 0)],
+        leaf_mask=[
+            (1, 0, 0, 0, 0, 0, 0),
+            (0, 0, 0, 0, 0, 1, 0),
+            (1, 0, 0, 0, 0, 0, 0),
+            (0, 0, 0, 0, 0, 0, 0),
+            (1, 0, 0, 0, 0, 0, 0),
+            (0, 0, 0, 0, 0, 0, 0)]),
+    ))
+def test_combined(test_data):
+    """Test identification of various tree-types"""
+    graph_edges = test_data['graph_edges']
+    parent_ids = isolate_subgraphs_test(graph_edges)
+    np.testing.assert_equal(parent_ids, test_data['parent_ids'])
     loop_mask = topo_graph.propagate_mask(graph_edges, True)
     loop_mask = topo_graph.propagate_mask(graph_edges[:, ::-1], loop_mask)
-    np.testing.assert_equal(loop_mask, [0,0,0,0,0,0,0,0, 1,1,1,1,1,1,1, 0])
-    np.testing.assert_equal(topo_graph.isolate_graph_sinks(graph_edges), False)
+    np.testing.assert_equal(loop_mask, test_data['loop_mask'])
+    np.testing.assert_equal(topo_graph.isolate_graph_sinks(graph_edges), test_data['sink_mask'])
     leaf_mask = topo_graph.isolate_graph_sinks(graph_edges[:, ::-1])
-    np.testing.assert_equal(leaf_mask, [1,0,0,0,0,1,0,0, 0,0,0,0,0,0,0, 1])
+    np.testing.assert_equal(leaf_mask, test_data['leaf_mask'])

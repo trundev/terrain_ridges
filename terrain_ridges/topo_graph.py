@@ -290,7 +290,7 @@ def propagate_mask(graph_edges: T_Graph, node_mask: T_MaskArray|bool, *,
         node_mask = operation(node_mask, last_mask)
     return node_mask
 
-def isolate_subgraphs(graph_edges: T_Graph, *, node_shape: T_IndexArray|None=None) -> T_IndexArray:
+def isolate_subgraphs_safe(graph_edges: T_Graph, *, node_shape: T_IndexArray|None=None) -> T_IndexArray:
     """Identify isolated sub-graphs (parent nodes), non-optimized implementation
 
     Parameters
@@ -319,3 +319,8 @@ def isolate_subgraphs(graph_edges: T_Graph, *, node_shape: T_IndexArray|None=Non
     # Convert parent IDs to indices (still keep the `-1`)
     parent_ids[valid_nodes] = np.unique_inverse(parent_ids[valid_nodes])[1]
     return parent_ids
+
+def isolate_subgraphs(graph_edges: T_Graph, *, node_shape: T_IndexArray|None=None) -> T_IndexArray:
+    """Identify isolated sub-graphs, optimized implementation"""
+    #TODO: Replace this with an algorithm to run equalize_subgraph_vals on "core" nodes only
+    return isolate_subgraphs_safe(graph_edges, node_shape=node_shape)
