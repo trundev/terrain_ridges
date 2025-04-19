@@ -17,7 +17,7 @@ dependencies = ["GDAL", "numpy", "pyproj"]
 [project.optional-dependencies]
 # Development deps, installed through `pip install .[dev]`
 dev = ["pytest"]
-visualize = ["plotly"]
+visualize = ["plotly", "dash", "dash-cytoscape", "requests"]
 
 [tool.pytest.ini_options]
 pythonpath = "./terrain_ridges"
