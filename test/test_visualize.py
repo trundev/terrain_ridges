@@ -53,18 +53,20 @@ def test_filter_treegraph(plotly_fig: go.Figure, altitude_grid):
     """Visualize filtered tree-graph from the initial edge list"""
     graph_edges, _ = build_full_graph.build_graph_edges(altitude_grid)
 
-    edge_list, edge_mask = topo_graph.filter_treegraph(graph_edges)
+    edge_mask = topo_graph.filter_treegraph(graph_edges)
     visualize_plotly.graph_to_trace(plotly_fig, graph_edges, altitude_grid, edge_mask=edge_mask)
     visualize_plotly.graph_to_trace(plotly_fig, graph_edges, altitude_grid,
                                     edge_mask=~edge_mask, name='Filtered edges')
     plotly_fig.update_layout(title_text=
-            f'Tree-graph - edges: {edge_list.shape[2:]} / {graph_edges.shape[2:]}, grid: {altitude_grid.shape}')
+            f'Tree-graph - edges: {edge_mask.sum()} / {graph_edges.shape[2:]},'
+            f' grid: {altitude_grid.shape}')
 
 def test_isolate_subgraphs(plotly_fig: go.Figure, altitude_grid):
     """Visualize isolated sub-graphs from tree-graphs"""
     graph_edges, _ = build_full_graph.build_graph_edges(altitude_grid)
     # Reduce edges by making it tree-graph
-    edge_list, edge_mask = topo_graph.filter_treegraph(graph_edges)
+    edge_mask = topo_graph.filter_treegraph(graph_edges)
+    edge_list = graph_edges[..., edge_mask]
 
     parent_id = topo_graph.isolate_subgraphs(edge_list)
     # Separate traces for each parent ID (sub-graph)
@@ -86,5 +88,5 @@ def test_isolate_subgraphs(plotly_fig: go.Figure, altitude_grid):
     visualize_plotly.graph_to_trace(plotly_fig, graph_edges, altitude_grid,
                                     edge_mask=ghost_mask, name='Ghost edges')
     plotly_fig.update_layout(title_text=
-            f'Sub-graphs - edges: {edge_list.shape[2:]}, ghost edges: {ghost_mask.sum()},'
+            f'Sub-graphs - edges: {edge_mask.sum()}, ghost edges: {ghost_mask.sum()},'
             f' grid: {altitude_grid.shape}')

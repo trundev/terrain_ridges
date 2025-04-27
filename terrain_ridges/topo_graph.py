@@ -1,7 +1,7 @@
 """Topology graph implementation
 
 Graph is represented by list of edges. Each edge consist of two node indices/IDs:
-for source and target node. Node order is usually relevant, but can be flipped.
+for source and target node. Node order is usually relevant, but can be swapped.
 
 Node indices are multi-dimensional vectors, usually of 2 or 1 components:
 - 2D is used when referring to points in original DEM grid
@@ -85,8 +85,18 @@ def valid_node_edges(graph_edges: T_Graph, both: bool=True) -> T_MaskArray:
     """
     return np.all(graph_edges >= 0, axis=(0, 1) if both else 0)
 
-def filter_treegraph(graph_edges: T_Graph) -> tuple[T_Graph, T_MaskArray]:
+def filter_treegraph(graph_edges: T_Graph, edge_mask: T_MaskArray|bool=True, *,
+                     node_ids: T_IndexArray|None=None) -> T_MaskArray:
     """Filter graph to a tree-style, by selecting edges with unique source-nodes only
+
+    Edge selection process:
+    - Select unique/fist nodes based on their ID or coordinates. Edge order takes precedence
+      over node order within the edges. For example, the target node of the first edge is selected
+      instead of the source node of the second edge.
+    - The ID option is allows nodes from the same sub-graph to be treated as non-unique (first one
+      is picked, others - ignored).
+    - Select edges with at least one selected node
+    - Edges, where only target-node is selected are swapped (`graph_edges` is modified inplace)
 
     Parameters
     ----------
@@ -94,24 +104,41 @@ def filter_treegraph(graph_edges: T_Graph) -> tuple[T_Graph, T_MaskArray]:
         Source graph, edges with smaller index are picked first, i.e.
         in case of nd-index, lower dim is prioritized - `[...,0,1]` before `[...,1,0]`
         (the array will be modified in-place, by swapping edges, where target-node was selected)
+    edge_mask : (edge-indices) ndarray of bool [optional]
+        Mask of edges to operate on, intended to:
+        - Shape of the returned mask to match the actual graph
+        - Graph inplace modifications to be seen by the caller (not possible on masked copy)
+    node_ids : (node-indices) ndarray of int [optional]
+        Node coordinate to ID map, if omitted the coordinates are used instead
 
     Returns
     -------
-    graph_edges : (node-coord, 2, edge-indices) ndarray of int
-        Filtered graph - all the source-nodes are unique (index `[:,0,...]`)
-        (this is a view from `graph_edges` input array)
     edge_mask : (edge-indices) ndarray of bool
+        Mask of selected edges from original graph
+        Graph is inplace modified (swapped edges) for some of these entries
     """
+    # Pick edges from `edge_mask`, convert node coordinates to IDs (if necessary)
+    edge_mask = np.broadcast_to(edge_mask, graph_edges.shape[2:]).copy()
+    real_edges = graph_edges[..., edge_mask]
+    if node_ids is not None:
+        real_edges = node_ids[..., *real_edges]
+
+    # Select the first occurrence of a node (by ID) from either the source or target side
+    # of each edge in the graph, edge order takes precedence.
     # Note:
     # Array transposing is to preserve node order when reshaping/masking:
     # both source/target nodes from the top edge remain on top
-    edge_src_mask = unique_mask(graph_edges.T.reshape(-1, graph_edges.shape[0]), axis=0)
-    edge_src_mask = edge_src_mask.reshape(graph_edges.shape[:0:-1]).T
+    edge_src_mask = unique_mask(real_edges.T.reshape(real_edges.shape[-1] * 2, -1), axis=0)
+    edge_src_mask = edge_src_mask.reshape(real_edges.shape[-1], 2).T
+
     # Swap edges (in-place), where target-node was selected
-    edge_mask = np.any(edge_src_mask, axis=0)
-    edge_src_mask = ~edge_src_mask[0] & edge_src_mask[1]
-    graph_edges[..., edge_mask & edge_src_mask] = graph_edges[:, ::-1, edge_mask & edge_src_mask]
-    return graph_edges[..., edge_mask], edge_mask
+    swap_mask = edge_mask.copy()
+    swap_mask[swap_mask] = ~edge_src_mask[0] & edge_src_mask[1]
+    graph_edges[..., swap_mask] = graph_edges[:, ::-1, swap_mask]
+
+    # Convert the selected edges to original graph shape
+    edge_mask[edge_mask] = edge_src_mask.any(0)
+    return edge_mask
 
 def isolate_graph_sinks(graph_edges: T_Graph, *, node_shape: T_IndexArray|None=None) -> T_MaskArray:
     """Identify sink-nodes inside graph (ones w/o target-nodes)

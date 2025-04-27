@@ -31,13 +31,15 @@ def test_filter_treegraph(complete_graph):
             'Unexpected number of test self-edges'
 
     # Check if the graph is modified inplace
-    res_edges, edge_mask = topo_graph.filter_treegraph(complete_graph)
-    np.testing.assert_equal(res_edges, complete_graph[..., edge_mask],
-                            'Source edges must be modified in-place')
+    orig_graph = complete_graph.copy()
+    edge_mask = topo_graph.filter_treegraph(complete_graph)
+    assert np.count_nonzero(np.any(orig_graph != complete_graph, axis=(0, 1))) > 1, \
+            'Some source edges must be modified in-place'
     # Every node must have single edge
-    assert res_edges[0,0].size == num_nodes, \
-            f'Number of result edges vs. nodes mismatch: {res_edges[0,0].size} / {num_nodes}'
+    assert np.count_nonzero(edge_mask) == num_nodes, \
+            f'Number of result edges vs. nodes mismatch: {edge_mask.sum()} / {num_nodes}'
     # Check source-node uniqueness
+    res_edges = complete_graph[..., edge_mask]
     vals, counts = np.unique(res_edges[:, 0], axis=1, return_counts=True)
     assert vals.shape == res_edges[:, 0].shape, 'Unique source-nodes shape mismatch'
     np.testing.assert_equal(counts, 1, 'Result source-nodes are NOT unique')
@@ -53,7 +55,8 @@ def test_isolate_graph_sinks(complete_graph):
     np.testing.assert_equal(sink_mask, False, 'No sinks must be detected (graph is complete)')
 
     # Reduce edges by making it tree-graph
-    graph_edges, _ = topo_graph.filter_treegraph(complete_graph)
+    edge_mask = topo_graph.filter_treegraph(complete_graph)
+    graph_edges = complete_graph[..., edge_mask]
     sink_mask = topo_graph.isolate_graph_sinks(graph_edges)
     assert np.count_nonzero(sink_mask) == 1, \
             'Single sink must be detected (graph is a single tree)'
@@ -68,7 +71,8 @@ def test_accumulate_src_vals(complete_graph):
                             'Accumulated values must match number of nodes (graph is complete)')
 
     # Reduce edges by making it tree-graph, obtain leaves
-    graph_edges, _ = topo_graph.filter_treegraph(complete_graph)
+    edge_mask = topo_graph.filter_treegraph(complete_graph)
+    graph_edges = complete_graph[..., edge_mask]
     leaf_mask = topo_graph.isolate_graph_sinks(graph_edges[:, ::-1])
 
     # Accumulate along known tree-graph
@@ -119,7 +123,8 @@ def test_propagate_mask(complete_graph):
     #
     # Similar tests, but on a tree-graph
     #
-    graph_edges, _ = topo_graph.filter_treegraph(complete_graph)
+    edge_mask = topo_graph.filter_treegraph(complete_graph)
+    graph_edges = complete_graph[..., edge_mask]
 
     # Expand-propagate mask from single node (at center)
     res_mask = topo_graph.propagate_mask(graph_edges, node_mask, operation=np.logical_or)
@@ -135,7 +140,8 @@ def test_propagate_mask(complete_graph):
 def test_propagate_mask2(altitude_graph):
     """Test node-mask propagation on altitude based graph"""
     # Run on filtered tree-graph
-    graph_edges, _ = topo_graph.filter_treegraph(altitude_graph)
+    edge_mask = topo_graph.filter_treegraph(altitude_graph)
+    graph_edges = altitude_graph[..., edge_mask]
 
     # Loop-based tests
     loop_mask = topo_graph.propagate_mask(graph_edges, True)
@@ -155,7 +161,8 @@ def test_isolate_subgraphs(complete_graph):
                             'All nodes must have the same parent (graph is complete)')
 
     # Reduce edges by making it tree-graph
-    graph_edges, _ = topo_graph.filter_treegraph(complete_graph)
+    edge_mask = topo_graph.filter_treegraph(complete_graph)
+    graph_edges = complete_graph[..., edge_mask]
 
     # Use larger node-grid shape
     node_shape = np.asarray(parent_ids.shape)
@@ -177,7 +184,8 @@ def test_isolate_subgraphs2(altitude_graph, altitude_grid):
                                 'Unused nodes must match the holes in the grid')
 
     # Run on filtered tree-graph
-    tree_edges, _ = topo_graph.filter_treegraph(altitude_graph)
+    edge_mask = topo_graph.filter_treegraph(altitude_graph)
+    tree_edges = altitude_graph[..., edge_mask]
     parent_id = topo_graph.isolate_subgraphs(tree_edges)
     parent_edges = parent_id[*tree_edges]
     np.testing.assert_equal(parent_edges[0], parent_edges[1],
