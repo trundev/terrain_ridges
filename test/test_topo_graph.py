@@ -156,6 +156,27 @@ def test_loop_leaf_sink(altitude_graph):
     np.testing.assert_equal(leaf_mask & sink_mask, False, 'Leaf and sink nodes must not overlap')
     np.testing.assert_equal(leaf_mask & loop_mask, False, 'Leaf and loop nodes must not overlap')
 
+#
+# isolate_subgraphs related
+#
+def isolate_subgraphs_safe(graph_edges: T_Graph, *, node_shape: T_IndexArray|None=None
+                           ) -> T_IndexArray:
+    """Identify isolated sub-graphs (parent nodes), non-optimized/reference implementation"""
+    # Start with unique parent IDs for each valid graph-node
+    if node_shape is None:
+        node_shape = topo_graph.graph_node_min_shape(graph_edges)
+    valid_nodes = np.zeros(node_shape, dtype=bool)
+    valid_edges = topo_graph.valid_node_edges(graph_edges, both=False)
+    valid_nodes[*graph_edges[:, valid_edges]] = True
+    parent_ids = np.full(node_shape, -1)    # `-1` will remain at unused nodes
+    parent_ids[valid_nodes] = np.arange(np.count_nonzero(valid_nodes))
+
+    parent_ids = topo_graph.equalize_subgraph_vals(graph_edges, parent_ids)
+
+    # Convert parent IDs to indices (still keep the `-1`)
+    parent_ids[valid_nodes] = np.unique_inverse(parent_ids[valid_nodes])[1]
+    return parent_ids
+
 def isolate_subgraphs_test(graph_edges: T_Graph, *args, **kwargs):
     """isolate_subgraphs() wrapper to fully test its result, esp. against safe one"""
     parent_ids = topo_graph.isolate_subgraphs(graph_edges, *args, **kwargs)
@@ -167,7 +188,7 @@ def isolate_subgraphs_test(graph_edges: T_Graph, *args, **kwargs):
     assert uniq_ids.size == uniq_ids.max() - uniq_ids.min() + 1, 'Parent IDs must be consecutive'
 
     # Compare against result from reference/safe implementation
-    ref_res = topo_graph.isolate_subgraphs_safe(graph_edges, *args, **kwargs)
+    ref_res = isolate_subgraphs_safe(graph_edges, *args, **kwargs)
     # Map `parent_ids` values to `ref_res`
     # (arrays may not be identical, but IDs must have 1-to-1 correspondence)
     _, uniq_idx, uniq_inv = np.unique(parent_ids, return_index=True, return_inverse=True)

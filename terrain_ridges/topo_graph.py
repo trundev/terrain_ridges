@@ -334,8 +334,16 @@ def shrink_mask(graph_edges: T_Graph, node_mask: T_MaskArray) -> T_MaskArray:
         edge_mask[...] = False
     return node_mask
 
-def isolate_subgraphs_safe(graph_edges: T_Graph, *, node_shape: T_IndexArray|None=None) -> T_IndexArray:
-    """Identify isolated sub-graphs (parent nodes), non-optimized implementation
+def isolate_subgraphs(graph_edges: T_Graph, *, node_shape: T_IndexArray|None=None) -> T_IndexArray:
+    """Identify isolated sub-graphs (parent nodes)
+
+    Isolate the "core" nodes, run `equalize_subgraph_vals()` on them and spread selected IDs
+    toward all incoming node chains.
+
+    This is optimized by selecting minimal set of "core" nodes to reduce iterations during graph
+    equalization. The "core" nodes are selected by assuming this is a tree-graph - every sink-node
+    is a separate sub-graph. Optimization also helps for graphs with fewer loops and/or "non-tree"
+    segments, i.e. nodes with multiple targets (nodes outgoing from these reduce the performance).
 
     Parameters
     ----------
@@ -349,22 +357,35 @@ def isolate_subgraphs_safe(graph_edges: T_Graph, *, node_shape: T_IndexArray|Non
     parent_node_ids : (node-indices) ndarray of int
         Unique parent node IDs for each graph-node, -1 for unused ones
     """
-    # Start with unique parent IDs for each valid graph-node
     if node_shape is None:
         node_shape = graph_node_min_shape(graph_edges)
-    valid_nodes = np.zeros(node_shape, dtype=bool)
-    valid_edges = valid_node_edges(graph_edges, both=False)
-    valid_nodes[*graph_edges[:, valid_edges]] = True
-    parent_ids = np.full(node_shape, -1)    # `-1` will remain at unused nodes
-    parent_ids[valid_nodes] = np.arange(np.count_nonzero(valid_nodes))
+    # Only edges where both nodes are valid (identify sinks at source-node of invalid edge)
+    graph_edges = graph_edges[..., valid_node_edges(graph_edges)]
 
-    parent_ids = equalize_subgraph_vals(graph_edges, parent_ids)
+    #
+    # Mask for potential sub-graph core nodes
+    #
+    # All nodes reachable from nodes with multiple target-nodes
+    core_mask = accumulate_src_vals(graph_edges[:, ::-1], np.full(node_shape, 1)) > 1
+    core_mask = expand_mask(graph_edges, core_mask)
+    # All nodes reachable from loops plus sinks
+    core_mask |= shrink_mask(graph_edges, np.broadcast_to(True, node_shape))
+    core_mask |= isolate_graph_sinks(graph_edges, node_shape=node_shape)
 
-    # Convert parent IDs to indices (still keep the `-1`)
-    parent_ids[valid_nodes] = np.unique_inverse(parent_ids[valid_nodes])[1]
+    # Select unique IDs for every core node
+    parent_ids = np.full(core_mask.shape, -1)
+    parent_ids[core_mask] = np.arange(np.count_nonzero(core_mask))
+
+    # Equalize sub-graphs, but only on edges between these cores (main optimization)
+    edge_mask = core_mask[*graph_edges].all(0)
+    parent_ids = equalize_subgraph_vals(graph_edges[..., edge_mask], parent_ids)
+    parent_ids[core_mask] = np.unique_inverse(parent_ids[core_mask])[1]
+
+    # Drop edges between core nodes
+    graph_edges = graph_edges[..., ~edge_mask]
+    # Propagate node-values toward edge source-nodes
+    for next_mask, edge_mask in _node_mask_propagator(graph_edges[:, ::-1], core_mask):
+        parent_ids[*graph_edges[:, 0, edge_mask]] = parent_ids[*graph_edges[:, 1, edge_mask]]
+        graph_edges = graph_edges[..., ~edge_mask]
+
     return parent_ids
-
-def isolate_subgraphs(graph_edges: T_Graph, *, node_shape: T_IndexArray|None=None) -> T_IndexArray:
-    """Identify isolated sub-graphs, optimized implementation"""
-    #TODO: Replace this with an algorithm to run equalize_subgraph_vals on "core" nodes only
-    return isolate_subgraphs_safe(graph_edges, node_shape=node_shape)
