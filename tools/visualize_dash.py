@@ -142,8 +142,8 @@ def visualize_graph(graph_edges: T_Graph, *, id: str=GRAPH_ID, **kwargs) -> str:
     if kwargs.get('node_class') is True:
         root_nodes = topo_graph.isolate_graph_sinks(graph_edges)
         leaf_nodes = topo_graph.isolate_graph_sinks(graph_edges[:, ::-1])
-        loop_nodes = topo_graph.propagate_mask(graph_edges, True)
-        loop_nodes = topo_graph.propagate_mask(graph_edges[:, ::-1], loop_nodes)
+        loop_nodes = topo_graph.shrink_mask(graph_edges, np.broadcast_to(True, leaf_nodes.shape))
+        loop_nodes = topo_graph.shrink_mask(graph_edges[:, ::-1], loop_nodes)
         kwargs['node_class'] = np.where(loop_nodes, 'loop',
                 np.where(root_nodes, 'root', np.where(leaf_nodes, 'leaf', '')))
     if kwargs.get('node_parent') is True:

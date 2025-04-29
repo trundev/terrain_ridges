@@ -104,20 +104,22 @@ def test_equalize_subgraph_vals2(altitude_graph, altitude_grid):
             'Referenced nodes must have value in initial range'
     assert res_vals[val_data_mask].min() == 5, 'The minimum value must persist'
 
-def test_propagate_mask(complete_graph):
-    """Test node-mask propagation"""
-    # Contract-propagate mask on all nodes
-    node_mask = topo_graph.propagate_mask(complete_graph, True)
+def test_shrink_expand_mask(complete_graph):
+    """Test node-mask propagation (shrink/expand)"""
+    # Shrink mask on all nodes
+    node_mask = topo_graph.shrink_mask(complete_graph,
+                                       topo_graph.broadcast_node_vals(complete_graph, True))
     np.testing.assert_equal(node_mask, True, 'All nodes must be selected (graph is complete)')
 
-    # Expand-propagate mask from single node (at center)
-    node_mask[...] = False
+    # Expand mask from single node (at center)
+    node_mask = np.zeros_like(node_mask)
     node_mask[*(np.asarray(node_mask.shape) // 2)] = True
-    res_mask = topo_graph.propagate_mask(complete_graph, node_mask, operation=np.logical_or)
+    node_mask.setflags(write=False)
+    res_mask = topo_graph.expand_mask(complete_graph, node_mask.copy())
     np.testing.assert_equal(res_mask, True, 'All nodes must be selected (graph is complete)')
 
-    # Contract-propagate mask from single node
-    res_mask = topo_graph.propagate_mask(complete_graph, node_mask, operation=np.logical_and)
+    # Shrink mask from single node
+    res_mask = topo_graph.shrink_mask(complete_graph, node_mask.copy())
     np.testing.assert_equal(res_mask, node_mask, 'Mask must not change (graph is complete)')
 
     #
@@ -126,26 +128,26 @@ def test_propagate_mask(complete_graph):
     edge_mask = topo_graph.filter_treegraph(complete_graph)
     graph_edges = complete_graph[..., edge_mask]
 
-    # Expand-propagate mask from single node (at center)
-    res_mask = topo_graph.propagate_mask(graph_edges, node_mask, operation=np.logical_or)
+    # Expand mask from single node (at center)
+    res_mask = topo_graph.expand_mask(graph_edges, node_mask.copy())
     assert not res_mask.all(), 'Some nodes must be NOT be selected'
     assert (~node_mask | res_mask).all(), 'Mask must expand'
     assert (node_mask != res_mask).any(), 'Mask must NOT remain the same'
-    # Same expand-propagate mask in reverse
-    res_mask = topo_graph.propagate_mask(graph_edges[:, ::-1], node_mask,
-                                         operation=np.logical_or)
+    # Same expand mask in reverse
+    res_mask = topo_graph.expand_mask(graph_edges[:, ::-1], node_mask.copy())
     assert not res_mask.all(), 'Some nodes must be NOT be selected'
     assert (~node_mask | res_mask).all(), 'Mask must expand (can remain the same)'
 
-def test_propagate_mask2(altitude_graph):
-    """Test node-mask propagation on altitude based graph"""
+def test_loop_leaf_sink(altitude_graph):
+    """Test loop/leaf/sink node detection on altitude based graph"""
     # Run on filtered tree-graph
     edge_mask = topo_graph.filter_treegraph(altitude_graph)
     graph_edges = altitude_graph[..., edge_mask]
 
     # Loop-based tests
-    loop_mask = topo_graph.propagate_mask(graph_edges, True)
-    loop_mask = topo_graph.propagate_mask(graph_edges[:, ::-1], loop_mask)
+    loop_mask = topo_graph.shrink_mask(graph_edges,
+                                       topo_graph.broadcast_node_vals(graph_edges, True))
+    loop_mask = topo_graph.shrink_mask(graph_edges[:, ::-1], loop_mask)
     np.testing.assert_equal(loop_mask, False, 'Reference data must have no loops')
     sink_mask = topo_graph.isolate_graph_sinks(graph_edges)
     np.testing.assert_equal(sink_mask & loop_mask, False, 'Sink and loop nodes must not overlap')
@@ -291,8 +293,8 @@ def test_combined(test_data):
     graph_edges = test_data['graph_edges']
     parent_ids = isolate_subgraphs_test(graph_edges)
     np.testing.assert_equal(parent_ids, test_data['parent_ids'])
-    loop_mask = topo_graph.propagate_mask(graph_edges, True)
-    loop_mask = topo_graph.propagate_mask(graph_edges[:, ::-1], loop_mask)
+    loop_mask = topo_graph.shrink_mask(graph_edges, topo_graph.broadcast_node_vals(graph_edges, True))
+    loop_mask = topo_graph.shrink_mask(graph_edges[:, ::-1], loop_mask)
     np.testing.assert_equal(loop_mask, test_data['loop_mask'])
     np.testing.assert_equal(topo_graph.isolate_graph_sinks(graph_edges), test_data['sink_mask'])
     leaf_mask = topo_graph.isolate_graph_sinks(graph_edges[:, ::-1])
