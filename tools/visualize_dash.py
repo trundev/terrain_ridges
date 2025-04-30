@@ -13,11 +13,12 @@ import sys
 import itertools
 import uuid
 import urllib.parse
+from typing import Callable
 import numpy as np
 import numpy.typing as npt
 import requests
 import plotly.colors as clrs
-from terrain_ridges import topo_graph
+from terrain_ridges import topo_graph, node_address
 from terrain_ridges.topo_graph import T_Graph, T_IndexArray, T_MaskArray
 
 
@@ -133,6 +134,140 @@ def graph_to_elements(graph_edges: T_Graph, edge_mask: T_MaskArray|bool=True, *,
     return elements
 
 #
+# node_addr_to_elements related functions
+#
+def node_element_position(node_id: T_IndexArray, layer=None) -> dict[str, dict]:
+    """Position attributes for node element"""
+    if layer is None:
+        scale = MODEL_POSITION_STEP
+    else:
+        scale = 10   #FIXME: Must depend on layer...
+    return dict(position={k: v.item(0) for k, v in zip('xy', node_id * scale)})
+
+def node_element_style(color: str, parent_node: bool) -> dict[str, dict]:
+    """Style attributes for node element"""
+    return dict(style={'border-color': color})
+
+def get_node_id(node_id: list[int]|T_IndexArray, is_grid:bool) -> str:
+    return str(node_id) if is_grid else'-'.join(map(str, node_id))
+
+def sub_node_elements(node_addrs: T_IndexArray, top_node_addr: list[int], *,
+                      addr_to_color: Callable, depth: int) -> list[dict]:
+    """Create cytoscape node-elements under specific node address"""
+    elements = []
+    top_layer = node_addrs.shape[0] - len(top_node_addr)
+    top_node_mask = (node_addrs[top_layer:].T == top_node_addr).T.all(0)
+    parent_id_str = get_node_id(top_node_addr, False)
+    if top_layer > 0:
+        # Layer above the base-grid one
+        for node_id in np.unique(node_addrs[top_layer - 1, top_node_mask]):
+            node_id = [int(node_id), *top_node_addr]
+            node_id_str = get_node_id(node_id, False)
+            element = dict(data=dict(id=node_id_str,
+                                     label=f'sub-graph: {node_id_str}',
+                                     parent=parent_id_str,
+                                     node_addr=node_id))
+            element |= node_element_style(addr_to_color(top_node_addr), depth > 0)
+            if depth > 0:
+                elements += sub_node_elements(node_addrs, node_id,
+                                              addr_to_color=addr_to_color, depth=depth-1)
+            else:
+                # Add position to the lowest visualized level: averaged coordinates
+                node_mask = (node_addrs[top_layer-1:].T == node_id).T.all(0)
+                element |= node_element_position(np.mean(np.nonzero(node_mask), axis=1), top_layer)
+                # Update label with the number of nodes
+                element['data']['label'] += f' ({node_mask.sum()})'
+            elements.append(element)
+    else:
+        # The base-grid layer, include node positions
+        for node_id in np.asarray(np.nonzero(top_node_mask)).T:
+            node_id_str = get_node_id(node_id, True)
+            element = dict(data=dict(id=node_id_str,
+                                     label=f'node: {node_id_str}',
+                                     parent=parent_id_str,
+                                     node_index=node_id.tolist()))
+            element |= node_element_position(node_id)
+            element |= node_element_style(addr_to_color(top_node_addr), False)
+            elements.append(element)
+
+    return elements
+
+def node_addr_to_elements(graph_edges: T_Graph, node_addrs: T_IndexArray,
+                          top_node_addr: list[int], depth: int=2):
+    """Create cytoscape elements list to visualize node hierarchy"""
+    #
+    # Create edges
+    #
+    # Filter edges between child nodes of `top_node_addr` only
+    top_layer = node_addrs.shape[0] - len(top_node_addr)
+    top_edge_mask = (node_addrs[top_layer:].T == top_node_addr).T.all(0)
+    top_edge_mask = top_edge_mask[*graph_edges].all(0)
+    graph_edges = graph_edges[..., top_edge_mask]
+    # Conversion map from index in `layer_edges` to `graph_edges` index
+    top_edge_idxs = np.arange(top_edge_mask.size)[top_edge_mask]
+
+    # Handy functions
+    def get_edges(layer: int, mask: T_MaskArray|slice=np.s_[:]) -> T_IndexArray:
+        """Filter edges from specific layer"""
+        edges = graph_edges[..., mask]
+        if layer >= 0:
+            edges = node_addrs[layer:, *edges]
+        return edges
+    def edge_elements(layer: int, edge_mask: T_MaskArray, props: dict={}) -> list[dict]:
+        """Generate cytoscape edge elements for specific layer"""
+        edge_list = get_edges(layer, edge_mask)
+        elements = []
+        for edge_idx, (src_edge, tgt_edge) in zip(np.nonzero(edge_mask)[0], edge_list.T):
+            elements.append(props |
+                    dict(data=dict(source=get_node_id(src_edge, layer < 0),
+                                    target=get_node_id(tgt_edge, layer < 0),
+                                    label=f'edge: {top_edge_idxs[edge_idx]}',
+                                    edge_index=top_edge_idxs[edge_idx].item(0))))
+        return elements
+
+    bottom_layer = max(top_layer - depth - 1, -1)
+    elements = []
+    for layer in range(max(bottom_layer, -1), top_layer):
+        layer_edges = get_edges(layer)
+
+        # Isolate all valid edges that collapse to self-edges in next layer
+        if layer < 0:
+            parent_edges = get_edges(layer + 1)
+            edge_mask = True
+        else:
+            parent_edges = layer_edges[1:]
+            edge_mask = (layer_edges[0, 0] != layer_edges[0, 1])
+        edge_mask = edge_mask & (parent_edges[:, 0] == parent_edges[:, 1]).all(0)
+
+        # Distinguish edges with unique source node (tree-edges)
+        tree_edge_mask = edge_mask.copy()
+        tree_edge_mask[edge_mask] = topo_graph.unique_mask(
+                    np.sort(layer_edges[..., edge_mask], axis=1)[:, 0],
+                    axis=-1)
+
+        elements += edge_elements(layer, tree_edge_mask)
+        if layer > bottom_layer:
+            elements += edge_elements(bottom_layer, edge_mask & tree_edge_mask,
+                                      props=dict(classes='passive'))
+            elements += edge_elements(bottom_layer, edge_mask & ~tree_edge_mask,
+                                      props=dict(classes='ghost'))
+
+    #
+    # Create nodes
+    #
+    # Combine node-address components to scalar (colorization):
+    addr_total, addr_dims = node_address.ravel_node_address(node_addrs)
+    addr_total = addr_total.max()
+    def addr_to_color(addr: list[int]) -> npt.NDArray[np.str_]:
+        """Convert node-address to scalar, then pick a color  (address can be partial)"""
+        addr = [0] * (addr_dims.size - len(addr))  + addr
+        return vals_to_colorscale(node_address.ravel_node_address(addr, dims=addr_dims)[0]
+                                  / addr_total)
+    elements += sub_node_elements(node_addrs, top_node_addr,
+                                 addr_to_color=addr_to_color, depth=depth)
+    return elements
+
+#
 # Client side code
 #
 GRAPH_ID = str(uuid.uuid4())
@@ -179,6 +314,23 @@ def visualize_graph(graph_edges: T_Graph, *, id: str=GRAPH_ID, **kwargs) -> str|
 #
 def main(argv) -> int:
     """Standalone execution (TODO: import data from file)"""
+    #HACK: The graph-edges and node address array arguments,
+    # must be generated by node_address.generate_node_addresses()
+    if len(argv) > 0:
+        import json, os
+        graph_fname, node_addr_fname = argv[:2]
+        graph_edges = np.load(graph_fname)
+        node_addrs = np.load(node_addr_fname)
+        top_node_addr = json.loads(argv[2])
+        cyto_elements = node_addr_to_elements(graph_edges, node_addrs, top_node_addr)
+        res = post_server_request(dict(title=f'Graph ({os.path.basename(graph_fname)}): '
+                                       f'{graph_edges.shape[2:]}, '
+                                       f'node address: {node_addrs.shape}, '
+                                       f'top node: {get_node_id(top_node_addr, False)}'),
+                            data=cyto_elements)
+        print(res)
+        return 0
+
     # Show some demo graph
     grid_edges = np.array((
             #

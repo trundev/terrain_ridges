@@ -138,3 +138,42 @@ def test_legacy(plotly_fig: go.Figure, tree_graph: T_Graph, merge_treegraph: T_G
             f' Tree edges: {tree_graph.shape[2:]} - {merge_treegraph.shape[2:]}'
             f' grid: {lonlatalt_grid.shape}',
             map=visualize_plotly.map_zoom_kwargs(lonlatalt_grid))
+
+#
+# Visualize node_address results
+#
+from terrain_ridges import node_address
+
+def test_node_address(plotly_fig: go.Figure, build_graph_edges: T_Graph, dem_band,
+                      dem_file_path: str):
+    """Visualize node_address results"""
+    node_addr = node_address.generate_node_addresses(build_graph_edges)
+
+    # Compare the result vs. reference
+    #TODO: Move this to dedicated non-visualization test module
+    ref_path = dem_file_path + '-node_addr.npy'
+    try:
+        node_addr_ref = np.load(ref_path)
+    except FileNotFoundError:
+        if False:   #TODO: Change this to generate reference data
+            np.save(ref_path, node_addr)
+            np.save(dem_file_path + '-graph_edges.npy', build_graph_edges)
+        #pytest.xfail(f'Missing reference result: {ref_path}')
+    else:
+        np.testing.assert_equal(node_addr, node_addr_ref, f'Reference result mismatch: {ref_path}')
+
+    # Converting addresses to scalars
+    ravel_addr, addr_shape = node_address.ravel_node_address(node_addr)
+
+    # Update plotly figure
+    plotly_fig.update_layout(title_text=
+            f'{os.path.basename(dem_file_path)} - Node addresses, grid: {node_addr.shape},'
+            f' levels {addr_shape}')
+
+    # Combine node-addresses with their coordinates
+    # (replace altitude in xy2lonlatalt by scalar address)
+    lonlatalt_grid = dem_band.xy2lonlatalt(np.moveaxis(np.indices(dem_band.shape), 0, -1))
+    lonlatalt_grid[..., -1] = ravel_addr
+    visualize_plotly.node_vals_to_trace(plotly_fig, lonlatalt_grid,
+                                        shape_dims=build_graph_edges.shape[0])
+    plotly_fig.update_layout(map=visualize_plotly.map_zoom_kwargs(lonlatalt_grid))
