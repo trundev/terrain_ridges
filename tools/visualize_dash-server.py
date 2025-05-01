@@ -15,6 +15,7 @@ DEFAULT_CYTO_ELEMENTS =[
         dict(data=dict(id='x', label='wait...'),
              classes='invalid',
             )]
+DEFAULT_CYTO_TAPINFO = dash.html.I('Click on graph element')
 
 CYTOSCAPE_LAYOUTS = ['preset', 'random', 'grid', 'circle', 'concentric', 'breadthfirst', 'cose']
 CYTOSCAPE_LAYOUT = dict(name='preset')
@@ -23,6 +24,7 @@ DASH_STYLE = dict(width='100%', height='600px')
 DASH_STYLE_SHEET = [
     dict(selector='node', style={
             'label': 'data(label)',
+            'border-width': '3px',
             }),
     dict(selector='edge', style={
             'target-arrow-shape': 'triangle',
@@ -67,34 +69,43 @@ DASH_STYLE_SHEET = [
 # Dash server related
 #
 def create_cytoscape(app: dash.Dash) -> tuple[
-        dash.development.base_component.Component,
-        dash.development.base_component.Component,
-        cyto.Cytoscape]:
+        dash.development.base_component.Component, cyto.Cytoscape,
+        dash.development.base_component.Component]:
     """Create the Cytoscape object"""
     #
     # Cytoscape object and a layout dropdown
     #
     title_comp = dash.html.Label(DEFAULT_CYTO_TITLE)
     cyto_comp = cyto.Cytoscape(elements=DEFAULT_CYTO_ELEMENTS,
-                id=str(uuid.uuid4()),
-                layout=CYTOSCAPE_LAYOUT,
-                style=DASH_STYLE,
-                stylesheet=DASH_STYLE_SHEET)
+            id=str(uuid.uuid4()),
+            layout=CYTOSCAPE_LAYOUT,
+            style=DASH_STYLE,
+            stylesheet=DASH_STYLE_SHEET)
     dropdown = dash.dcc.Dropdown(
             id=cyto_comp.id +'-dropdown',
             value=cyto_comp.layout.get('name'),
             clearable=False,
-            options=[{'label': name, 'value': name} for name in CYTOSCAPE_LAYOUTS]
-        )
+            options=[{'label': name, 'value': name} for name in CYTOSCAPE_LAYOUTS])
+    cyto_tapinfo = dash.html.Pre(DEFAULT_CYTO_TAPINFO,
+            id=cyto_comp.id +'-tapinfo')
     @app.callback(dash.Output(cyto_comp.id, 'layout'),
-                dash.Input(dropdown.id, 'value'))
+                  dash.Input(dropdown.id, 'value'))
     def update_layout(layout):
         return {'name': layout}
+    @app.callback(dash.Output(cyto_tapinfo.id, 'children'),
+                  dash.Input(cyto_comp.id, 'selectedNodeData'),
+                  dash.Input(cyto_comp.id, 'selectedEdgeData'),
+                  prevent_initial_call=True)
+    def displayNodeEdgeData(nodeData, edgeData):
+        data = {f'nodes ({len(nodeData)})': nodeData} if nodeData else {}
+        data |= {f'edges ({len(edgeData)})': edgeData} if edgeData else {}
+        return json.dumps(data, indent=2)
 
     #
     # Combine into Fieldset
     #
-    return title_comp, cyto_comp, dash.html.Fieldset([title_comp, cyto_comp, dropdown])
+    return title_comp, cyto_comp, dash.html.Fieldset(
+            [title_comp, cyto_comp, dropdown, cyto_tapinfo])
 
 def run_dash() -> None:
     """Start the Dash server"""
@@ -123,9 +134,11 @@ def run_dash() -> None:
             return f'Request method {request.method} not supported'
 
         title = request.args.get('title')
-        data_str = f'{data[:10]}...' if len(data) > 10 else data
-        print(f'Received POST title {title}, data:')
-        print(f'  {data_str}')
+        print(f'Received POST title: "{title}", data (len {len(data)}):')
+        if len(data) < 10:
+            print(data)
+        else:
+            print(data[:10], '\n...')
 
         title_comp.children = title
         cyto_comp.elements = data

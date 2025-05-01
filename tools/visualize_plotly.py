@@ -10,13 +10,19 @@ See: https://plotly.com/python/
 import numpy as np
 from terrain_ridges.topo_graph import T_Graph, T_MaskArray, T_IndexArray, T_NodeValues
 import plotly.graph_objects as go
-from plotly import basedatatypes
 
 # Slice axis to project 3D grids in 2D plane
 SLICE_AXIS = 0      #TODO: Change this
 SLICE_LABEL = 'xyz'[SLICE_AXIS]
 ALTITUDE_COLORSCALE = 'viridis'
 GRAPH_MARKERS = True
+
+def map_zoom_kwargs(node_vals: T_NodeValues) -> dict[str, dict]:
+    """Zoom to the center of coordinates from node_vals"""
+    node_vals = node_vals.reshape(-1, node_vals.shape[-1]).T
+    zoom = (np.nanmax(node_vals, axis=-1) - np.nanmin(node_vals, axis=-1))[:2].max()
+    zoom = np.log2(360 / zoom)  # zoom 0 is 360 degree wide
+    return dict(center=dict(zip(('lon', 'lat'), np.nanmean(node_vals, axis=-1))), zoom=zoom)
 
 #
 # Node value (altitude) visualization
@@ -52,11 +58,11 @@ def node_vals_to_trace(fig: go.Figure, node_vals: T_NodeValues, *, shape_dims: i
             alts = None
         else:
             # longitude/latitude and altitude
-            assert len(node_shape) == node_vals.shape[-1] + 1, \
+            assert len(node_shape) + 1 == node_vals.shape[-1], \
                 'Nodes must have extra altitude coordinate'
-            alts = node_vals[..., -1]
-            node_vals = node_vals[..., :-1]
-        trace_kwargs = dict(zip(('lon', 'lat'), node_vals))
+            alts = node_vals[..., -1].flat
+        trace_kwargs = dict(zip(('lon', 'lat'), node_vals.reshape(-1, node_vals.shape[-1]).T),
+                            marker_color=alts)
     else:
         # Value is a scalar - altitude, coordinates are integer grid
         alts = node_vals
@@ -64,12 +70,14 @@ def node_vals_to_trace(fig: go.Figure, node_vals: T_NodeValues, *, shape_dims: i
         # Extra dimension from altitude (if available)
         if 'z' not in trace_kwargs:
             trace_kwargs['xyz'[len(node_shape)]] = alts
+    if alts is not None:
+        trace_kwargs['text'] = 'alt:' + np.asarray(alts, dtype=str)
     trace_kwargs['name'] = 'Node vals'
 
     # Select type of plotly figure
     if geo_mode:
-        #TODO: Fix this
-        fig.add_scattermapbox(**trace_kwargs)
+        # Use plotly.graph_objects.Scattermap
+        fig.add_scattermap(**trace_kwargs)
     else:
         if len(node_shape) == 1:
             # 1D node grid - 2D scatter
@@ -95,7 +103,7 @@ def node_vals_to_trace(fig: go.Figure, node_vals: T_NodeValues, *, shape_dims: i
             assert False, 'TODO: Unsupported'
     return fig
 
-def visualize_altutude(altitude_grid: T_NodeValues) -> go.Figure:
+def visualize_altitude(altitude_grid: T_NodeValues) -> go.Figure:
     """Visualize altitude grid"""
     fig = go.Figure()
     fig.update_layout(title_text=f'Elevation grid, shape {altitude_grid.shape}', showlegend=True)
@@ -112,7 +120,7 @@ def adjust_node_points(points: T_NodeValues, mask: T_MaskArray, scale: float=.05
     points[:, mask] = points[:, mask] * (1-scale) + points[:, ::-1][:, mask] * scale
     return points
 
-def graph_to_trace(fig: go.Figure, graph_edges: T_Graph, altitude_grid: T_NodeValues|None, *,
+def graph_to_trace(fig: go.Figure, graph_edges: T_Graph, node_coords: T_NodeValues|None, *,
                    edge_mask: T_MaskArray|None=None, node_color: T_IndexArray|None=None,
                    name: str|None=None) -> go.Figure:
     """Create plotly traces from graph (list of edges)
@@ -122,8 +130,8 @@ def graph_to_trace(fig: go.Figure, graph_edges: T_Graph, altitude_grid: T_NodeVa
     fig : plotly.Figure
     graph_edges : (node-coord, 2, edge-indices) ndarray of int
         Source graph
-    altitude_grid : (node-index) [optional]
-        Graph-node altitudes
+    node_coord : (node-index) or (node-index, 3) [optional]
+        Graph-node altitudes or full longitude/latitude/altitude coordinates
     edge_mask : (edge-indices) ndarray of bool [optional]
         Mask to apply over source graph, for correct edge index text-labels
     node_color : (node-index) [optional]
@@ -138,16 +146,26 @@ def graph_to_trace(fig: go.Figure, graph_edges: T_Graph, altitude_grid: T_NodeVa
     points = graph_edges[..., edge_mask]
 
     # Handle scenarios with and w/o altitude
-    if altitude_grid is None:
+    geo_mode = False
+    if node_coords is None:
         alts = None
         # 1D case: same x and y values
         if points.shape[0] == 1:
             points = np.concatenate((points, points), axis=0)
-    else:
-        alts = altitude_grid[*points]
+    elif node_coords.ndim == points.shape[0]:
+        # Node coordinates are altitude only
+        alts = node_coords[*points]
         # Add altitude as next axis (if dimensions allow)
         if points.shape[0] < 3:
             points = np.concatenate((points, alts[np.newaxis]), axis=0)
+    else:
+        # Node coordinates are full longitude/latitude/altitude
+        geo_mode = True
+        assert node_coords.ndim == points.shape[0] + 1, \
+                'Nodes coordinates must have extra altitude component'
+        alts = node_coords[*points, -1]
+        # Move coordinate in first dimension, use lon/lat only
+        points = node_coords.T[:2, *points[::-1]]
 
     # Pull back edge-target a bit (to NOT overlap actual target-node)
     edge_src_mask = np.broadcast_to(([True], [False]), points.shape[1:])
@@ -159,11 +177,11 @@ def graph_to_trace(fig: go.Figure, graph_edges: T_Graph, altitude_grid: T_NodeVa
 
     # Combine  plotly.graph_objects.Scatter arguments
     # Convert coordinates to x=<arr>, y=<arr>, ... format
-    kwargs = {k: v.T.flat for k, v in zip('xyz', points)}
+    kwargs = {k: v.T.flat for k, v in zip(('lon', 'lat') if geo_mode else 'xyz', points)}
     # Generate text and symbols for each marker (TODO: expected single dimension edge-index)
     text = np.nonzero(np.broadcast_to(edge_mask, (3,) + edge_mask.shape).T)
     kwargs['text'] = 'edge:' + text[0].astype(str) + '-' + text[1].astype(str)
-    if GRAPH_MARKERS:
+    if GRAPH_MARKERS or node_color is not None:
         kwargs['mode'] = 'lines+markers'
         # Symbols denote source/target node
         symbols = np.where(edge_src_mask, 'circle', 'circle-open')
@@ -173,7 +191,7 @@ def graph_to_trace(fig: go.Figure, graph_edges: T_Graph, altitude_grid: T_NodeVa
         if node_color is not None:
             # Color markers by node-altitude
             marker_color = node_color[*graph_edges[..., edge_mask]]
-            kwargs['marker_color'] = np.pad(marker_color, pad_width[1:]).T.flat
+            kwargs['marker_color'] = np.pad(marker_color, pad_width[1:], mode='edge').T.flat
         elif alts is not None:
             # Color markers by node-altitude
             kwargs['marker_color'] = np.pad(alts, pad_width[1:]).T.flat
@@ -182,20 +200,26 @@ def graph_to_trace(fig: go.Figure, graph_edges: T_Graph, altitude_grid: T_NodeVa
         kwargs['mode'] = 'lines'
 
     kwargs['name'] = 'Graph edges' if name is None else name
-    if 'z' in kwargs:
+    if geo_mode:
+        #TODO: Must replace symbols that do NOT work with Scattermap
+        del kwargs['marker_symbol']
+        fig.add_scattermap(**kwargs)
+    elif 'z' in kwargs:
         fig.add_scatter3d(**kwargs)
     else:
         fig.add_scatter(**kwargs)
     return fig
 
-def visualize_graph(graph_edges: T_Graph, altitude_grid: T_NodeValues|None=None, **kwargs
+def visualize_graph(graph_edges: T_Graph, node_coords: T_NodeValues|None=None, **kwargs
                     ) -> go.Figure:
     """Visualize graph"""
-    if altitude_grid is None:
+    if node_coords is None:
         grid_shape = None
     else:
-        grid_shape = altitude_grid.shape
+        grid_shape = node_coords.shape
     fig = go.Figure()
-    fig.update_layout(title_text=f'Elevation grid, shape {grid_shape}', showlegend=True)
-    graph_to_trace(fig, graph_edges, altitude_grid, **kwargs).show()
+    fig.update_layout(title_text=f'Node grid, shape {grid_shape}', showlegend=True)
+    if node_coords is not None and node_coords.ndim > 2:
+        fig.update_layout(map=map_zoom_kwargs(node_coords))
+    graph_to_trace(fig, graph_edges, node_coords, **kwargs).show()
     return fig

@@ -5,6 +5,7 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 from . import conftest  # Imported by pytest anyway
+from terrain_ridges.topo_graph import T_NodeValues
 from terrain_ridges import build_full_graph, topo_graph
 # plotly is NOT mandatory for pytest-s
 try:
@@ -17,13 +18,38 @@ except ModuleNotFoundError as ex:
 # Skip the whole module with "not visualize" marker (default)
 pytestmark = pytest.mark.visualize
 
+DEF_MAP_LAYERS = []
+# Tiles from Open Topo Map (https://opentopomap.org/)
+DEF_MAP_LAYERS.append({
+            'name': 'Open Topo Map',
+            'below': 'traces',
+            'sourcetype': "raster",
+            'sourceattribution': '© OpenTopoMap (CC-BY-SA)',
+            'source': ['https://tile.opentopomap.org/{z}/{x}/{y}.png'],
+            'minzoom': 7,
+            'visible': False,
+        })
+# Tiles from mapy.cz (https://mapy.cz/)
+DEF_MAP_LAYERS.append({
+            'name': 'mapy.cz',
+            'below': 'traces',
+            'sourcetype': "raster",
+            'sourceattribution': '©Seznam.cz a.s., 2025 and more',
+            'source': ['https://windytiles.mapy.cz/turist-m/{z}-{x}-{y}.png'],
+            'minzoom': 3,
+            'visible': True,
+        })
+DEF_MAP_STYLE = 'satellite' # satellite-streets
+DEF_MAP_STYLE = 'open-street-map'   # No contours
+
 @pytest.fixture
 def plotly_fig():
     """Plotly fixture, skip if not installed"""
     fig = go.Figure()
     yield fig
     if fig.data:
-        fig.update_layout(showlegend=True)
+        fig.update_layout(showlegend=True,
+                          map=dict(layers=DEF_MAP_LAYERS, style=DEF_MAP_STYLE))
         fig.show()
 
 # Slice axis to project 3D grids in 2D plane
@@ -38,18 +64,18 @@ def numpy_printoptions():
 #
 # Altitude visualization
 #
-def test_altitude_grid(plotly_fig: go.Figure, altitude_grid):
+def test_altitude_grid(plotly_fig: go.Figure, altitude_grid: T_NodeValues):
     """Visualize various altitude grids (not actual test)"""
     visualize_plotly.node_vals_to_trace(plotly_fig, altitude_grid, shape_dims=None)
 
-def test_build_full_graph(plotly_fig: go.Figure, altitude_grid):
+def test_build_full_graph(plotly_fig: go.Figure, altitude_grid: T_NodeValues):
     """Visualize initial graph (not actual test)"""
     graph_edges, lexsort_keys = build_full_graph.build_graph_edges(altitude_grid)
     visualize_plotly.graph_to_trace(plotly_fig, graph_edges, altitude_grid)
     plotly_fig.update_layout(title_text=
             f'Main edges - edges: {graph_edges.shape[2:]}, grid: {altitude_grid.shape}')
 
-def test_filter_treegraph(plotly_fig: go.Figure, altitude_grid):
+def test_filter_treegraph(plotly_fig: go.Figure, altitude_grid: T_NodeValues):
     """Visualize filtered tree-graph from the initial edge list"""
     graph_edges, _ = build_full_graph.build_graph_edges(altitude_grid)
 
@@ -61,7 +87,7 @@ def test_filter_treegraph(plotly_fig: go.Figure, altitude_grid):
             f'Tree-graph - edges: {edge_mask.sum()} / {graph_edges.shape[2:]},'
             f' grid: {altitude_grid.shape}')
 
-def test_isolate_subgraphs(plotly_fig: go.Figure, altitude_grid):
+def test_isolate_subgraphs(plotly_fig: go.Figure, altitude_grid: T_NodeValues):
     """Visualize isolated sub-graphs from tree-graphs"""
     graph_edges, _ = build_full_graph.build_graph_edges(altitude_grid)
     # Reduce edges by making it tree-graph

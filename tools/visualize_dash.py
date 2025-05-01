@@ -16,6 +16,7 @@ import urllib.parse
 import numpy as np
 import numpy.typing as npt
 import requests
+import plotly.colors as clrs
 from terrain_ridges import topo_graph
 from terrain_ridges.topo_graph import T_Graph, T_IndexArray, T_MaskArray
 
@@ -25,10 +26,16 @@ MODEL_POSITION_STEP = 120
 # Parent node ID to assign to invalid nodes
 INVALID_PARENT_ID = 'invalid'
 
-def vals_to_colorscale(vals: T_IndexArray) -> npt.NDArray[np.str_]:
-    import plotly.colors as clrs
-    idx = (vals - vals.min()) / (vals.max() - vals.min()) * (len(clrs.sequential.Viridis) - 1)
-    return np.asarray(clrs.sequential.Viridis)[idx.round().astype(int)]
+def vals_to_colorscale(val: npt.NDArray[np.floating], colors: list[str]|None=None
+                       ) -> npt.NDArray[np.str_]:
+    """Select colors for individual values, must be in range [0, 1]"""
+    if colors is None:
+        colors = clrs.sequential.Viridis
+    return np.asarray(colors)[np.round(val * (len(colors) - 1)).astype(int) % len(colors)]
+
+def val_array_to_colorscale(vals: T_IndexArray, **kwargs) -> npt.NDArray[np.str_]:
+    """Select colors for all values from an array"""
+    return vals_to_colorscale((vals - vals.min()) / (vals.max() - vals.min()), **kwargs)
 
 #
 # Graph/edge visualization
@@ -60,7 +67,7 @@ def graph_to_elements(graph_edges: T_Graph, edge_mask: T_MaskArray|bool=True, *,
     # Color nodes based on parent
     node_color = None
     if node_parent is not None:
-        node_color = vals_to_colorscale(node_parent)
+        node_color = val_array_to_colorscale(node_parent)
 
     elements = []
     # Add nodes, structure:
@@ -131,7 +138,20 @@ def graph_to_elements(graph_edges: T_Graph, edge_mask: T_MaskArray|bool=True, *,
 GRAPH_ID = str(uuid.uuid4())
 SERVER_URL = 'http://127.0.0.1:8050/cytoscape?'
 
-def visualize_graph(graph_edges: T_Graph, *, id: str=GRAPH_ID, **kwargs) -> str:
+def post_server_request(url_query: dict[str, str], data: list[dict]) -> str|None:
+    """Post request to the server (visualize_dash-server.py)"""
+    url = SERVER_URL + urllib.parse.urlencode(url_query)
+    try:
+        res = requests.post(url, json=data)
+    except requests.exceptions.ConnectionError as ex:
+        print(ex)
+        print()
+        print('Must run dash visualization server:')
+        print('>>> python tools/visualize_dash-server.py')
+        return None
+    return res.text
+
+def visualize_graph(graph_edges: T_Graph, *, id: str=GRAPH_ID, **kwargs) -> str|None:
     """Convert graph to cytoscape format and post it to the server
 
     See graph_to_elements()
@@ -151,9 +171,8 @@ def visualize_graph(graph_edges: T_Graph, *, id: str=GRAPH_ID, **kwargs) -> str:
         kwargs['node_parent'] = parent_ids
 
     cyto_elements = graph_to_elements(graph_edges, **kwargs)
-    url = SERVER_URL + urllib.parse.urlencode(dict(id=id, title=f'Graph - edges: {graph_edges.shape[2:]}'))
-    res = requests.post(url, json=cyto_elements)
-    return res.text
+    return post_server_request(dict(id=id, title=f'Graph - edges: {graph_edges.shape[2:]}'),
+                               data=cyto_elements)
 
 #
 # Main entry
