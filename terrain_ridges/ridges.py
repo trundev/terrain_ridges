@@ -3,7 +3,12 @@ import sys
 import time
 import argparse
 import numpy
-import gdal_utils
+if __package__ is None:
+    # Script is executed directly - its directory is added to `sys.path`
+    import gdal_utils
+else:
+    # Not executed directly - can do package relative imports
+    from . import gdal_utils
 
 # Neighbor directions:
 #   0 1 2

@@ -10,7 +10,7 @@ import itertools
 from typing import Callable, Iterator
 import numpy as np
 import numpy.typing as npt
-from topo_graph import T_Graph, T_IndexArray, T_NodeValues
+from .topo_graph import T_Graph, T_IndexArray, T_NodeValues
 
 
 # Prepare edges, by batches of source-nodes (reduce memory consumption)
