@@ -6,7 +6,7 @@ on:
   pull_request:
 
 env:
-  SRC_URL: "https://www.iea-software.com/ftp/Emeraldv6/Geography/Eurasia/Elevations/SRTM3/N39E021.hgt.zip"
+  SRC_ENTITIES: "[ 'SRTM3N39E021V1' ]"
 
 jobs:
   validate:
@@ -40,13 +40,13 @@ jobs:
 
     - name: Download source DEM
       id: download-dem
-      uses: ./.github/download-data
+      uses: ./.github/download-usgs
       with:
-        source-urls: ${{ env.SRC_URL }}
-        unpack-sources: true
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        UNPACK_DIR: ${{ env.SRC_DEM_DIR }}
-        UNPACK_EXTENSIONS: ${{ env.DEM_EXTENSIONS }}
+        entity-ids: ${{ env.SRC_ENTITIES }}
+        dataset-name: "srtm"
+        usgs-username: ${{ secrets.USGS_USERNAME }}
+        usgs-token: ${{ secrets.USGS_TOKEN }}
+        download-dir: ${{ env.SRC_DEM_DIR }}
 
     - name: Run PyTest
       env:

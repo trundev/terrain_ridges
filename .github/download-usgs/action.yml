@@ -1,0 +1,157 @@
+name: Download from USGS server
+description: Download source DEM data from USGS server using M2M
+inputs:
+  entity-ids:
+    description: "List of entity IDs to download"
+    required: true
+    type: string
+  dataset-name:
+    description: "Dataset to download data from"
+    default: "srtm_v3"
+    required: false
+    type: string
+  usgs-username:
+    description: "Username to login in USGS server"
+    default: ""
+    required: true
+    type: string
+  usgs-token:
+    description: "Token to login in USGS server"
+    default: ""
+    required: true
+    type: string
+  download-dir:
+    description: "Destination path for downloaded source data"
+    default: "${{ runner.temp }}"
+    required: false
+    type: string
+  # Internal constant parameters
+  service-url:
+    default: "https://m2m.cr.usgs.gov/api/api/json/stable/"
+    required: false
+    type: string
+  product-preference:
+    default: "['GeoTIFF', 'DTED', 'BIL']"
+    required: false
+    type: string
+
+outputs:
+  display-names:
+    description: "Downloaded file-names for display purposes"
+    value: ${{ steps.download.outputs.source-names }}
+  download-paths:
+    description: "Paths to downloaded files"
+    value: ${{ steps.download.outputs.download-paths }}
+
+runs:
+  using: "composite"
+  steps:
+  - name: Install dependencies
+    shell: pwsh
+    run: python -m pip install requests
+
+  - name: Collect URLs for download
+    id: download-request
+    shell: python
+    run: |
+      """Collect USGS server download URLs"""
+      import os
+      import json
+      import requests
+
+      PRODUCT_NAME_PREFERENCE = ${{ inputs.product-preference }}
+      LOWEST_PRODUCT_PREFERENCE = len(PRODUCT_NAME_PREFERENCE) + 10
+      def product_preference(product_name: str) -> int:
+          for idx, pref in enumerate(PRODUCT_NAME_PREFERENCE):
+              if pref in product_name:
+                  return idx
+          return LOWEST_PRODUCT_PREFERENCE
+
+      def sendRequest(endpoint: str, data: dict[str, str], apiKey: str|None
+                      ) -> dict[str, str]|list[dict]|str|None:
+          """Send http request"""
+          headers = None if apiKey is None else {'X-Auth-Token': apiKey}
+          response = requests.post(${{ toJSON(inputs.service-url) }} + endpoint, json=data, headers=headers)
+          response.close()
+
+          httpStatusCode = response.status_code
+          if response == None:
+              print("No output from service")
+              return None
+          output = json.loads(response.text)
+          return  output['data']
+
+      print('Authenticating...')
+      payload = {'username' : ${{ toJSON(inputs.usgs-username) }},
+                 'token' : ${{ toJSON(inputs.usgs-token) }} }
+      apiKey = sendRequest("login-token", payload, None)
+
+      entity_ids = ${{ inputs.entity-ids }}
+      payload = {'datasetName' : ${{ toJSON(inputs.dataset-name) }}, 'entityIds' : entity_ids}
+      downloadOptions = sendRequest("download-options", payload, apiKey)
+
+      # Pick single download option for each entity
+      print(f'Download options for: {entity_ids}')
+      downloads = {}
+      for product in downloadOptions:
+          if not product['available']:
+              continue
+          print(f"  {product['displayId']}: {product['productName']}")
+
+          pref = product_preference(product['productName'])
+          previous = downloads.get(product['entityId'], {'preference': LOWEST_PRODUCT_PREFERENCE})
+          if previous['preference'] > pref:
+              product['preference'] = pref
+              downloads[product['entityId']] = product
+
+      # Call download-request and download-retrieve if necessary
+      downloads = list({'entityId': p['entityId'], 'productId': p['id']} for p in downloads.values())
+      payload = {'downloads' : downloads}
+      requestResults = sendRequest("download-request", payload, apiKey)
+
+      available_downloads = requestResults['availableDownloads']
+      if requestResults['preparingDownloads'] is not None \
+              and len(requestResults['preparingDownloads']) > 0:
+          moreDownloadUrls = sendRequest("download-retrieve", payload, apiKey)
+          available_downloads += moreDownloadUrls['available']
+
+      # Combine collected URLs
+      available_downloads = json.dumps(available_downloads)
+      with open(os.environ['GITHUB_OUTPUT'], 'at') as fd:
+          print(f'available-downloads={available_downloads}', file=fd)
+      print(f'available-downloads set to {available_downloads}')
+
+  - name: Download source files
+    id: download
+    shell: python
+    run: |
+      """Download data from collected URLs"""
+      import os
+      import re
+      import json
+      import requests
+
+      download_dir = os.path.abspath(${{ toJSON(inputs.download-dir) }})
+      os.makedirs(download_dir, exist_ok=True)
+      download_paths = []
+      display_names = []
+      for download in json.loads(${{ toJSON(steps.download-request.outputs.available-downloads) }}):
+          display_id = download.get('displayId', download['entityId'])
+          print(f"Downloading {display_id} from {download['url']}...")
+          response = requests.get(download['url'], stream=True)
+          disposition = response.headers['content-disposition']
+          filename = re.findall('filename=(.+)', disposition)[0].strip('"')
+          filepath = os.path.join(download_dir, filename)
+          with open(filepath, 'wb') as fd:
+              fd.write(response.content)
+          print(f"  Downloaded: {filepath}")
+          download_paths.append(filepath)
+          display_names.append(filename)
+
+      download_paths = json.dumps(download_paths)
+      display_names = json.dumps(display_names)
+      with open(os.environ['GITHUB_OUTPUT'], 'at') as fd:
+          print(f'download-paths={download_paths}', file=fd)
+          print(f'display-names={display_names}', file=fd)
+      print(f'download-paths set to {download_paths}')
+      print(f'display-names set to {display_names}')
