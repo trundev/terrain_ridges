@@ -3,8 +3,10 @@ import logging
 import ogr2osm_translation
 
 
-FEATURE_ISOLINE_TAG = 'isoline'
-ISOLINE_STEPS = 'step_1000', 'step_500', 'step_100', 'step_50', 'step_10', 'zero'
+FEATURE_RIDGE_MARKER = {'boundary': 'administrative'}
+FEATURE_ZOOM_LEVEL_TAG = 'admin_level'
+# Map from ridge zoom-level to tag value (starting from level 10)
+FEATURE_ZOOM_LEVEL_VALS = ['2', '2', '3', '3', '4', '4']
 
 class mwm_translation(ogr2osm_translation.mwm_translation):
     """Hack ogr2osm translation"""
@@ -17,8 +19,11 @@ class mwm_translation(ogr2osm_translation.mwm_translation):
             lvl = self._get_zoomlevel(desc)
             if lvl:
                 lvl = round(lvl)
-                tags[FEATURE_ISOLINE_TAG] = ISOLINE_STEPS[min(max(lvl - 10, 0), len(ISOLINE_STEPS)-1)]
-                logging.debug(f'Added zoom-level tag [{FEATURE_ISOLINE_TAG}={tags[FEATURE_ISOLINE_TAG]}], '
+                tags |= FEATURE_RIDGE_MARKER
+                tags[FEATURE_ZOOM_LEVEL_TAG] = FEATURE_ZOOM_LEVEL_VALS[
+                        min(max(lvl - 10, 0), len(FEATURE_ZOOM_LEVEL_VALS)-1)]
+                logging.debug('Added zoom-level tag '
+                              f'[{FEATURE_ZOOM_LEVEL_TAG}={tags[FEATURE_ZOOM_LEVEL_TAG]}], '
                               f'based on [description={desc}]')
 
         return super().filter_tags(tags)
