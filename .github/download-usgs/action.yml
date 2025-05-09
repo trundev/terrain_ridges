@@ -48,7 +48,7 @@ runs:
   steps:
   - name: Install dependencies
     shell: pwsh
-    run: python -m pip install requests
+    run: python -m pip install aiohttp
 
   - name: Collect URLs for download
     id: download-request
@@ -57,7 +57,8 @@ runs:
       """Collect USGS server download URLs"""
       import os
       import json
-      import requests
+      import asyncio
+      import aiohttp
 
       PRODUCT_NAME_PREFERENCE = ${{ inputs.product-preference }}
       LOWEST_PRODUCT_PREFERENCE = len(PRODUCT_NAME_PREFERENCE) + 10
@@ -71,15 +72,13 @@ runs:
                       ) -> dict[str, str]|list[dict]|str|None:
           """Send http request"""
           headers = None if apiKey is None else {'X-Auth-Token': apiKey}
-          response = requests.post(${{ toJSON(inputs.service-url) }} + endpoint, json=data, headers=headers)
-          response.close()
-
-          httpStatusCode = response.status_code
-          if response == None:
-              print("No output from service")
-              return None
-          output = json.loads(response.text)
-          return  output['data']
+          async def async_post():
+              async with aiohttp.ClientSession() as session:
+                  async with session.post(${{ toJSON(inputs.service-url) }} + endpoint,
+                                          json=data, headers=headers) as response:
+                      return await response.text()
+          output = json.loads(asyncio.run(async_post()))
+          return output['data']
 
       print('Authenticating...')
       payload = {'username' : ${{ toJSON(inputs.usgs-username) }},
@@ -129,24 +128,32 @@ runs:
       import os
       import re
       import json
-      import requests
+      import asyncio
+      import aiohttp
 
+      downloads = json.loads(${{ toJSON(steps.download-request.outputs.available-downloads) }})
       download_dir = os.path.abspath(${{ toJSON(inputs.download-dir) }})
       os.makedirs(download_dir, exist_ok=True)
+
       download_paths = []
       display_names = []
-      for download in json.loads(${{ toJSON(steps.download-request.outputs.available-downloads) }}):
+      async def async_download(session, download):
           display_id = download.get('displayId', download['entityId'])
           print(f"Downloading {display_id} from {download['url']}...")
-          response = requests.get(download['url'], stream=True)
-          disposition = response.headers['content-disposition']
-          filename = re.findall('filename=(.+)', disposition)[0].strip('"')
-          filepath = os.path.join(download_dir, filename)
-          with open(filepath, 'wb') as fd:
-              fd.write(response.content)
-          print(f"  Downloaded: {filepath}")
-          download_paths.append(filepath)
-          display_names.append(filename)
+          async with session.get(download['url']) as response:
+              disposition = response.headers['content-disposition']
+              filename = re.findall('filename=(.+)', disposition)[0].strip('"')
+              filepath = os.path.join(download_dir, filename)
+              with open(filepath, 'wb') as fd:
+                  fd.write(await response.read())
+              print(f"  Downloaded {display_id}: {filepath}")
+              download_paths.append(filepath)
+              display_names.append(filename)
+
+      async def async_download_all(downloads):
+          async with aiohttp.ClientSession() as session:
+              await asyncio.gather(*(async_download(session, dwn) for dwn in downloads))
+      asyncio.run(async_download_all(downloads))
 
       download_paths = json.dumps(download_paths)
       display_names = json.dumps(display_names)
