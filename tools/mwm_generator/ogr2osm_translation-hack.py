@@ -4,9 +4,9 @@ import ogr2osm_translation
 
 
 FEATURE_RIDGE_MARKER = {}
-FEATURE_ZOOM_LEVEL_TAG = 'waterway'
-# Map from ridge zoom-level to tag value (starting from level 10)
-FEATURE_ZOOM_LEVEL_VALS = ['river', 'river', 'stream', 'stream', 'ditch', 'ditch']
+FEATURE_ZOOM_LEVEL_TAG = 'highway'
+# Map from ridge zoom-level to tag value (starting from level 8)
+FEATURE_ZOOM_LEVEL_VALS = ['primary', 'secondary', 'tertiary', 'tertiary', 'road', 'road', 'footway', 'footway']
 
 class mwm_translation(ogr2osm_translation.mwm_translation):
     """Hack ogr2osm translation"""
@@ -21,7 +21,7 @@ class mwm_translation(ogr2osm_translation.mwm_translation):
                 lvl = round(lvl)
                 tags |= FEATURE_RIDGE_MARKER
                 tags[FEATURE_ZOOM_LEVEL_TAG] = FEATURE_ZOOM_LEVEL_VALS[
-                        min(max(lvl - 10, 0), len(FEATURE_ZOOM_LEVEL_VALS)-1)]
+                        min(max(lvl - 8, 0), len(FEATURE_ZOOM_LEVEL_VALS)-1)]
                 logging.debug('Added zoom-level tag '
                               f'[{FEATURE_ZOOM_LEVEL_TAG}={tags[FEATURE_ZOOM_LEVEL_TAG]}], '
                               f'based on [description={desc}]')
