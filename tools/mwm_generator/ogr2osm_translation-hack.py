@@ -3,10 +3,10 @@ import logging
 import ogr2osm_translation
 
 
-FEATURE_RIDGE_MARKER = {'boundary': 'administrative'}
-FEATURE_ZOOM_LEVEL_TAG = 'admin_level'
+FEATURE_RIDGE_MARKER = {}
+FEATURE_ZOOM_LEVEL_TAG = 'waterway'
 # Map from ridge zoom-level to tag value (starting from level 10)
-FEATURE_ZOOM_LEVEL_VALS = ['2', '2', '3', '3', '4', '4']
+FEATURE_ZOOM_LEVEL_VALS = ['river', 'river', 'stream', 'stream', 'ditch', 'ditch']
 
 class mwm_translation(ogr2osm_translation.mwm_translation):
     """Hack ogr2osm translation"""
