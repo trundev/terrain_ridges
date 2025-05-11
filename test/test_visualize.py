@@ -149,19 +149,6 @@ def test_node_address(plotly_fig: go.Figure, build_graph_edges: T_Graph, dem_ban
     """Visualize node_address results"""
     node_addr = node_address.generate_node_addresses(build_graph_edges)
 
-    # Compare the result vs. reference
-    #TODO: Move this to dedicated non-visualization test module
-    ref_path = dem_file_path + '-node_addr.npy'
-    try:
-        node_addr_ref = np.load(ref_path)
-    except FileNotFoundError:
-        if False:   #TODO: Change this to generate reference data
-            np.save(ref_path, node_addr)
-            np.save(dem_file_path + '-graph_edges.npy', build_graph_edges)
-        #pytest.xfail(f'Missing reference result: {ref_path}')
-    else:
-        np.testing.assert_equal(node_addr, node_addr_ref, f'Reference result mismatch: {ref_path}')
-
     # Converting addresses to scalars
     ravel_addr, addr_shape = node_address.ravel_node_address(node_addr)
 

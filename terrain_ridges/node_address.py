@@ -35,10 +35,12 @@ def normalize_id_simple(parent_ids: T_IndexArray) -> T_IndexArray:
 def normalize_id(parent_ids: T_IndexArray) -> T_IndexArray:
     """Convert node/parent IDs to normalized indices
 
-    The node ID is represented by the position of a parent ID in an array and the ID itself.
-    Parent IDs must be already indices (consecutive unique numbers starting from zero), if not,
-    this can be achieved by:
+    The node IDs are represented by an array of unique elements for each node. The node ID is the
+    index of the element, parent ID is its value. Parent IDs must be indices (consecutive unique
+    numbers starting from zero) or `-1` for invalid nodes. If not, this can be achieved by:
     >>> parent_ids = np.unique_inverse(parent_ids)[1]
+
+    Separate IDs will be assigned to every node where `parent_ids == -1`.
 
     Note:
     The parent ID array must be one dimensional, other options are not fully explored yet.
@@ -71,8 +73,39 @@ def normalize_id(parent_ids: T_IndexArray) -> T_IndexArray:
         last_acc_ids = acc_ids[-1]
         normalized = np.concatenate((normalized, acc_ids[mask]), axis=0)
 
-    # Combine the node ID pair
-    return np.stack((normalized, parent_ids))
+    # Return normalized child-node IDs
+    return normalized
+
+def normalize_node_addr(node_addr: T_IndexArray) -> T_IndexArray:
+    """Normalize the result from generate_node_addresses()
+
+    Convert all node-address components to indices (consecutive numbers starting from zero).
+    This rule apply to every group of components with the same parent component, thus the
+    different parent groups can have same IDs at lower levels.
+
+    A separate valid addresses are assigned to every invalid node ID (`-1`).
+
+    Parameters
+    ----------
+    node_addr : (addr-comp, node-indices) ndarray of int
+        Non-normalized node addresses as returned by generate_node_addresses()
+
+    Returns
+    -------
+    node_addr : (addr-comp, node-indices) ndarray of int
+        Normalized multi-component address for each node
+    """
+    for comp in range(node_addr.shape[0]):
+        _, uniq_idx, uniq_inv = np.unique(node_addr[comp], return_index=True,  return_inverse=True)
+        # Note: Use fake (all zeros) parent component of top of the last one
+        parent_ids = node_addr[comp + 1] if comp + 1 < node_addr.shape[0] else \
+                np.zeros_like(node_addr[0])
+        if True:    #HACK: Check if each component level is a subset of the next one
+            np.testing.assert_equal(parent_ids.flat[uniq_idx][uniq_inv], parent_ids,
+                                    'Different parent IDs for the same node ID')
+        norm_ids = normalize_id(parent_ids.flat[uniq_idx])
+        node_addr[comp] = norm_ids[uniq_inv]
+    return node_addr
 
 def node_parent_gen(graph_edges: T_Graph, *, node_shape: T_IndexArray|None=None
                     ) -> Iterator[T_IndexArray]:
@@ -99,7 +132,8 @@ def node_parent_gen(graph_edges: T_Graph, *, node_shape: T_IndexArray|None=None
         tree_edge_mask = topo_graph.filter_treegraph(graph_edges)
         parent_ids = topo_graph.isolate_subgraphs(graph_edges[..., tree_edge_mask],
                                                   node_shape=node_shape)
-        node_shape = parent_ids.max() + 1   # `isolate_subgraphs()` does this anyway
+        # `isolate_subgraphs()` will do this, but only for nodes in parent-graph
+        node_shape = parent_ids.max() + 1
         yield parent_ids
 
         # Identify edges between sub-graphs, skip internal ones
@@ -107,12 +141,9 @@ def node_parent_gen(graph_edges: T_Graph, *, node_shape: T_IndexArray|None=None
         par_graph_edges = parent_ids[*graph_edges[..., ext_edge_mask]]
         mask = par_graph_edges[0] != par_graph_edges[1]
         ext_edge_mask[ext_edge_mask] = mask
-        # Select unique edges between sub-graphs, skip duplicated ones
-        mask = topo_graph.unique_mask(np.sort(par_graph_edges[..., mask], axis=0), axis=1)
-        ext_edge_mask[ext_edge_mask] = mask
         del mask, tree_edge_mask
 
-        # Drop the internal and duplicated edges (as selected above)
+        # Drop the internal edges (as selected above)
         # Use sub-graph IDs as node ID
         graph_edges = parent_ids[np.newaxis, *graph_edges[..., ext_edge_mask]]
 
@@ -129,25 +160,16 @@ def generate_node_addresses(graph_edges: T_Graph) -> T_IndexArray:
     node_addr : (addr-comp, node-indices) ndarray of int
         Multi-component address for each node
     """
+    node_shape = topo_graph.graph_node_min_shape(graph_edges)
+    node_addr = np.arange(np.prod(node_shape)).reshape(1, *node_shape)
     # Group nodes into parent-nodes, then repeat.
     # Each iteration "adjusts" the node-IDs from previous one, according to the parents
-    node_addr = None
-    for parent_ids in node_parent_gen(graph_edges):
-        # Append parent IDs to the address
-        if node_addr is None:
-            # This is the first address component
-            node_addr = parent_ids[np.newaxis]
-        else:
-            # Normalize previous address components, using their parent IDs.
-            # Keep both in `node_addr`
-            norm_ids = normalize_id(parent_ids)
-            norm_ids = norm_ids[:, node_addr[-1]]
-            # Restore the invalid-node markers
-            norm_ids[:, node_addr[-1] < 0] = -1
-            node_addr = np.concatenate((node_addr[:-1], norm_ids), axis=0)
-            del norm_ids
+    for parent_ids in node_parent_gen(graph_edges, node_shape=node_shape):
+        # Remap returned parent IDs to node-grid
+        parent_ids = parent_ids.flat[node_addr[-1]]
+        # Restore the invalid-node markers ????
+        parent_ids[node_addr[-1] < 0] = -1
+        node_addr = np.concatenate((node_addr, parent_ids[np.newaxis]), axis=0)
 
-    # Dummy/empty address array, when the graph was empty
-    if node_addr is None:
-        return np.empty((0,) * (graph_edges.shape[0] + 1), dtype=int)
-    return node_addr
+    #HACK: Return normalized addresses, but w/o the base component
+    return normalize_node_addr(node_addr[1:])
