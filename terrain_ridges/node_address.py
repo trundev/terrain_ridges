@@ -107,8 +107,7 @@ def normalize_node_addr(node_addr: T_IndexArray) -> T_IndexArray:
         node_addr[comp] = norm_ids[uniq_inv]
     return node_addr
 
-def node_parent_gen(graph_edges: T_Graph, *, node_shape: T_IndexArray|None=None
-                    ) -> Iterator[T_IndexArray]:
+def node_parent_gen(graph_edges: T_Graph, *, node_shape: T_IndexArray) -> Iterator[T_IndexArray]:
     """Iterator to assign a parent-node/sub-graph IDs to each node
 
     Parameters
@@ -126,26 +125,27 @@ def node_parent_gen(graph_edges: T_Graph, *, node_shape: T_IndexArray|None=None
         - Next iterations return 1D array of elements for each unique ID
           returned by previous iteration
     """
+    edge_mask = True
+    node_ids = np.indices(tuple(node_shape))
     # Iterate until the graph collapses, each iteration groups the nodes from the
     # previous one into sub-graphs, which in turn are treated as nodes by the next one
-    while graph_edges.size:
-        tree_edge_mask = topo_graph.filter_treegraph(graph_edges)
-        parent_ids = topo_graph.isolate_subgraphs(graph_edges[..., tree_edge_mask],
+    while np.any(edge_mask):
+        tree_edge_mask = topo_graph.filter_treegraph(graph_edges, edge_mask=edge_mask,
+                                                     node_ids=node_ids)
+        parent_ids = topo_graph.isolate_subgraphs(node_ids[:, *graph_edges[..., tree_edge_mask]],
                                                   node_shape=node_shape)
-        # `isolate_subgraphs()` will do this, but only for nodes in parent-graph
-        node_shape = parent_ids.max() + 1
         yield parent_ids
 
-        # Identify edges between sub-graphs, skip internal ones
-        ext_edge_mask = ~tree_edge_mask
-        par_graph_edges = parent_ids[*graph_edges[..., ext_edge_mask]]
-        mask = par_graph_edges[0] != par_graph_edges[1]
-        ext_edge_mask[ext_edge_mask] = mask
-        del mask, tree_edge_mask
+        # `isolate_subgraphs()` will do this, but only for nodes in parent-graph
+        node_shape = parent_ids.max() + 1
+        # Map parent IDs to node-grid
+        node_ids = parent_ids[np.newaxis, *node_ids]
 
-        # Drop the internal edges (as selected above)
-        # Use sub-graph IDs as node ID
-        graph_edges = parent_ids[np.newaxis, *graph_edges[..., ext_edge_mask]]
+        # Identify edges between sub-graphs, skip internal ones
+        edge_mask &= ~tree_edge_mask
+        par_graph_edges = node_ids[:, *graph_edges[..., edge_mask]]
+        mask = (par_graph_edges[:, 0] != par_graph_edges[:, 1]).any(0)
+        edge_mask[edge_mask] = mask
 
 def generate_node_addresses(graph_edges: T_Graph) -> T_IndexArray:
     """Assign address to each node based on sub-graph hierarchy
