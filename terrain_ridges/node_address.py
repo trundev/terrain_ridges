@@ -134,12 +134,12 @@ def node_parent_gen(graph_edges: T_Graph, *, node_shape: T_IndexArray) -> Iterat
                                                      node_ids=node_ids)
         parent_ids = topo_graph.isolate_subgraphs(node_ids[:, *graph_edges[..., tree_edge_mask]],
                                                   node_shape=node_shape)
-        yield parent_ids
+        # Map parent IDs to node-grid
+        node_ids = parent_ids[np.newaxis, *node_ids]
+        yield node_ids
 
         # `isolate_subgraphs()` will do this, but only for nodes in parent-graph
         node_shape = parent_ids.max() + 1
-        # Map parent IDs to node-grid
-        node_ids = parent_ids[np.newaxis, *node_ids]
 
         # Identify edges between sub-graphs, skip internal ones
         edge_mask &= ~tree_edge_mask
@@ -165,11 +165,9 @@ def generate_node_addresses(graph_edges: T_Graph) -> T_IndexArray:
     # Group nodes into parent-nodes, then repeat.
     # Each iteration "adjusts" the node-IDs from previous one, according to the parents
     for parent_ids in node_parent_gen(graph_edges, node_shape=node_shape):
-        # Remap returned parent IDs to node-grid
-        parent_ids = parent_ids.flat[node_addr[-1]]
         # Restore the invalid-node markers ????
-        parent_ids[node_addr[-1] < 0] = -1
-        node_addr = np.concatenate((node_addr, parent_ids[np.newaxis]), axis=0)
+        parent_ids[:, node_addr[-1] < 0] = -1
+        node_addr = np.concatenate((node_addr, parent_ids), axis=0)
 
     #HACK: Return normalized addresses, but w/o the base component
     return normalize_node_addr(node_addr[1:])
