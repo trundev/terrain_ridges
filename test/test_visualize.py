@@ -147,7 +147,7 @@ from terrain_ridges import node_address
 def test_node_address(plotly_fig: go.Figure, build_graph_edges: T_Graph, dem_band,
                       dem_file_path: str):
     """Visualize node_address results"""
-    node_addr = node_address.generate_node_addresses(build_graph_edges)
+    node_addr = node_address.generate_node_addresses(build_graph_edges)[0]
 
     # Converting addresses to scalars
     ravel_addr, addr_shape = node_address.ravel_node_address(node_addr)
@@ -164,3 +164,24 @@ def test_node_address(plotly_fig: go.Figure, build_graph_edges: T_Graph, dem_ban
     visualize_plotly.node_vals_to_trace(plotly_fig, lonlatalt_grid,
                                         shape_dims=build_graph_edges.shape[0])
     plotly_fig.update_layout(map=visualize_plotly.map_zoom_kwargs(lonlatalt_grid))
+
+def test_edge_levels(plotly_fig: go.Figure, build_graph_edges: T_Graph, dem_band,
+                      dem_file_path: str):
+    """Visualize edge_levels results"""
+    edge_levels = node_address.generate_node_addresses(build_graph_edges)[1]
+
+    lonlatalt_grid = dem_band.xy2lonlatalt(np.moveaxis(np.indices(dem_band.shape), 0, -1))
+
+    # Update plotly figure
+    plotly_fig.update_layout(title_text=
+            f'{os.path.basename(dem_file_path)} -'
+            f' Edge levels: {edge_levels.shape}'
+            f' grid: {lonlatalt_grid.shape}',
+            map=visualize_plotly.map_zoom_kwargs(lonlatalt_grid))
+
+    for level in np.unique(edge_levels):
+        mask = edge_levels == level
+        graph_edges = build_graph_edges[..., mask]
+
+        visualize_plotly.graph_to_trace(plotly_fig, graph_edges, lonlatalt_grid,
+                                        name=f'level {level}: {graph_edges.shape[2:]}')

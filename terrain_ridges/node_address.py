@@ -1,7 +1,7 @@
 """Assign addresses to each node, based on sub-graph hierarchy"""
 import numpy as np
 from typing import Iterator, Sequence
-from .topo_graph import T_Graph, T_IndexArray
+from .topo_graph import T_Graph, T_IndexArray, T_MaskArray
 from . import topo_graph
 
 
@@ -107,7 +107,8 @@ def normalize_node_addr(node_addr: T_IndexArray) -> T_IndexArray:
         node_addr[comp] = norm_ids[uniq_inv]
     return node_addr
 
-def node_parent_gen(graph_edges: T_Graph, *, node_shape: T_IndexArray) -> Iterator[T_IndexArray]:
+def node_parent_gen(graph_edges: T_Graph, *, node_shape: T_IndexArray
+                    ) -> Iterator[tuple[T_IndexArray, T_MaskArray]]:
     """Iterator to assign a parent-node/sub-graph IDs to each node
 
     Parameters
@@ -136,7 +137,7 @@ def node_parent_gen(graph_edges: T_Graph, *, node_shape: T_IndexArray) -> Iterat
                                                   node_shape=node_shape)
         # Map parent IDs to node-grid
         node_ids = parent_ids[np.newaxis, *node_ids]
-        yield node_ids
+        yield node_ids, tree_edge_mask
 
         # `isolate_subgraphs()` will do this, but only for nodes in parent-graph
         node_shape = parent_ids.max() + 1
@@ -147,7 +148,7 @@ def node_parent_gen(graph_edges: T_Graph, *, node_shape: T_IndexArray) -> Iterat
         mask = (par_graph_edges[:, 0] != par_graph_edges[:, 1]).any(0)
         edge_mask[edge_mask] = mask
 
-def generate_node_addresses(graph_edges: T_Graph) -> T_IndexArray:
+def generate_node_addresses(graph_edges: T_Graph) -> tuple[T_IndexArray, T_IndexArray]:
     """Assign address to each node based on sub-graph hierarchy
 
     Parameters
@@ -164,10 +165,16 @@ def generate_node_addresses(graph_edges: T_Graph) -> T_IndexArray:
     node_addr = np.arange(np.prod(node_shape)).reshape(1, *node_shape)
     # Group nodes into parent-nodes, then repeat.
     # Each iteration "adjusts" the node-IDs from previous one, according to the parents
-    for parent_ids in node_parent_gen(graph_edges, node_shape=node_shape):
+    edge_levels = np.zeros_like(graph_edges[0,0])
+    for level, (parent_ids, tree_edge_mask) in enumerate(
+            node_parent_gen(graph_edges, node_shape=node_shape)):
         # Restore the invalid-node markers ????
         parent_ids[:, node_addr[-1] < 0] = -1
         node_addr = np.concatenate((node_addr, parent_ids), axis=0)
 
+        # Keep locations of tree-edges
+        np.testing.assert_equal(edge_levels[tree_edge_mask], 0, 'Edge reuse detected')
+        edge_levels[tree_edge_mask] = level + 1 #TODO: CHECKME: May should start from 0
+
     #HACK: Return normalized addresses, but w/o the base component
-    return normalize_node_addr(node_addr[1:])
+    return normalize_node_addr(node_addr[1:]), edge_levels
