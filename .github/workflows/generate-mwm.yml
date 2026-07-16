@@ -47,7 +47,7 @@ jobs:
         working-directory: ${{ env.WORK_DIR }}
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
 
     #
     # First download the soure file(s) to avoid later failures
@@ -63,14 +63,14 @@ jobs:
     #
     # Setup Organic Maps generator related tools
     #
-    - name: Set up Python 3.13
+    - name: Set up Python 3.14
       id: setup-python
-      uses: actions/setup-python@v5
+      uses: actions/setup-python@v6
       with:
-        python-version: '3.13'
+        python-version: '3.14'
 
     - name: Cache Organic Maps tools
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       id: omim-cache
       with:
         path: |
@@ -99,7 +99,7 @@ jobs:
         sudo apt-get install -y cmake
 
     - name: "[OMIM] Clone Organic Maps ${{ inputs.omim-version }}"
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       with:
         repository: organicmaps/organicmaps
         ref: ${{ inputs.omim-version }}
@@ -144,7 +144,7 @@ jobs:
         ./tools/unix/generate_drules.sh
 
     - name: "[OMIM] Upload generated 'drules_proto' styles"
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       if: inputs.OMIM_STYLE_PATCH
       with:
         name: "drules_proto-${{ inputs.omim-version }}"
@@ -281,7 +281,7 @@ jobs:
           if ($LASTEXITCODE) {exit $LASTEXITCODE}
         }
 
-    - uses: actions/upload-artifact@v4
+    - uses: actions/upload-artifact@v7
       if: always()
       with:
         name: ${{ env.DST_NAME }}
