@@ -15,7 +15,7 @@ on:
         type: boolean
       omim-version:
         description: "The Organic Maps version to build map for"
-        default: "2025.03.02-7-android"
+        default: "2026.08.27-18-android"
         required: false
         type: string
       MAPS_GENERATOR_OPTS:
@@ -26,7 +26,7 @@ on:
       OMIM_STYLE_PATCH:
         description: "Git-patch to modify the original Organic Maps styles"
         required: false
-        default: "omim_patch/0001-Terrain-ridge-style-using-size-tag-2025.03.02.patch"
+        default: "omim_patch/0001-Terrain-ridge-style-using-size-tag-2026.08.27.patch"
         type: string
 
 env:
@@ -86,17 +86,19 @@ jobs:
         sudo apt-get install -y `
             qt6-base-dev `
             qt6-positioning-dev `
+            libc++-dev `
             libfreetype-dev `
             libglvnd-dev `
             libgl1-mesa-dev `
             libharfbuzz-dev `
             libicu-dev `
             libqt6svg6-dev `
-            libqt6positioning6-plugins `
-            libqt6positioning6
-        #HACK: Replace the preinstalled cmake=4.0, to workaround:
-        #   Compatibility with CMake < 3.5 has been removed from CMake.
-        sudo apt-get install -y cmake
+            libsqlite3-dev `
+            libxrandr-dev `
+            libxinerama-dev `
+            libxcursor-dev `
+            libxi-dev `
+            zlib1g-dev
 
     - name: "[OMIM] Clone Organic Maps ${{ inputs.omim-version }}"
       uses: actions/checkout@v7
@@ -112,7 +114,6 @@ jobs:
       # See https://github.com/organicmaps/organicmaps/blob/master/tools/python/maps_generator/README.md#setup
       working-directory: ${{ env.WORK_DIR }}/omim
       run: |
-        ./configure.sh
         ./tools/unix/build_omim.sh -r generator_tool
         ./tools/unix/build_omim.sh -r world_roads_builder_tool
         ./tools/unix/build_omim.sh -r mwm_diff_tool
@@ -124,6 +125,10 @@ jobs:
         if ($LASTEXITCODE) {exit $LASTEXITCODE}
         # Do not install "osmctools", which will build it from cloned sources
         #sudo apt-get install -y osmctools
+        #HACK: Beatiful Soup was removed from requirements_dev.txt,
+        # but still used by .../maps_generator/utils/file.py.
+        # BLAKE3 is used by .../post_generation/hierarchy_to_countries.py.
+        pip3 install beautifulsoup4 blake3
 
     - name: "[OMIM] Update style"
       if: inputs.OMIM_STYLE_PATCH
@@ -143,12 +148,12 @@ jobs:
         echo "# Regenerate Organic Maps style"
         ./tools/unix/generate_drules.sh
 
-    - name: "[OMIM] Upload generated 'drules_proto' styles"
+    - name: "[OMIM] Upload generated 'drules' styles"
       uses: actions/upload-artifact@v7
       if: inputs.OMIM_STYLE_PATCH
       with:
-        name: "drules_proto-${{ inputs.omim-version }}"
-        path: ${{ env.WORK_DIR }}/omim/data/drules_proto*.*
+        name: "drules-${{ inputs.omim-version }}"
+        path: ${{ env.WORK_DIR }}/omim/data/drules_*.*
 
     #
     # Setup GDAL and other tools
